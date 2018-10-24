@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="chrome=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CSE 274 Project Milestone</title>
+  <link rel="shortcut icon" href="assets/images/favicon.png" />
+
+  <!-- Stylesheets-->
+  <link href="assets/css/style.css" rel="stylesheet">
+  <link href="assets/css/highlight.min.css" rel="stylesheet">
+  <link href="assets/css/zoom.min.css" rel="stylesheet">
+  
+  <!-- KaTeX -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.10.0-rc.1/dist/katex.min.css" integrity="sha384-D+9gmBxUQogRLqvARvNLmA9hS2x//eK1FhVb9PiU86gmcrBrJAQT8okdJ4LMp2uv" crossorigin="anonymous">
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.10.0-rc.1/dist/katex.min.js" integrity="sha384-483A6DwYfKeDa0Q52fJmxFXkcPCFfnXMoXblOkJ4JcA8zATN6Tm78UNL72AKk+0O" crossorigin="anonymous"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.10.0-rc.1/dist/contrib/auto-render.min.js" integrity="sha384-yACMu8JWxKzSp/C1YV86pzGiQ/l1YUfE8oPuahJQxzehAjEt2GiQuy/BIvl9KyeF" crossorigin="anonymous" onload="renderMathInElement(document.body);"></script>
+  
+  <!--[if lt IE 9]>
+  <script src="//html5shiv.googlecode.com/svn/trunk/html5.js"></script>
+  <![endif]-->
+</head>
+<body>
+  <div class="wrapper">
+    <h1 id="title">CSE 274 Project Milestone</h1>
+    <h3 id="subtitle">KPCN-Based Denoising Methods &middot; Owen Jow</h3>
+    <br />
+    <hr />
+    <br />
+
+    <h2 id="path-tracing">Path Tracing</h2>
+    <p>As a first step, I've created a path tracer from scratch!</p>
+    
+    <table><tr><td>
+      <img src="https://owenjow.xyz/images/pt2_lucy.jpg" width="100%" data-action="zoom" />
+      <figcaption>Figure 01: caption here</figcaption>
+    </td></tr></table>
+    
+    <div class="mathjax-resize">
+      $$D'_{ij} = \sum_{k = -m}^{m - 1}w_kD_{i + k, j + k}$$
+    </div>
+  
+    <p>We are filtering our \(D\) matrix with a kernel of binomial weights \([w_{-m}, ..., w_{m - 1}]\).</p>
+    
+    <h2 id="denoising">Denoising</h2>
+    <p>For efficiency, we will sample sparsely during path tracing. Then we will use kernel-predicting convolutional networks (KPCNs) to denoise our images.<p>
+  </div>
+
+  <!-- Scripts -->
+  <script src="assets/js/jquery-3.1.1.min.js"></script>
+  <script src="assets/js/zoom.min.js"></script>
+  <script src="assets/js/transition.min.js"></script>
+  <script src="assets/js/script.min.js"></script>
+</body>
+</html>

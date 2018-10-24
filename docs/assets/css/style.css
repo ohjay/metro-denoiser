@@ -1,0 +1,379 @@
+@import url('https://fonts.googleapis.com/css?family=Niramit|Text+Me+One');
+
+figcaption {
+  text-align: center;
+}
+
+* {
+  -webkit-font-smoothing: antialiased;
+  font-weight: 500;
+}
+
+a small,
+a:hover small {
+  color: #777;
+}
+
+body {
+  background-color: #fff;
+  padding: 50px;
+  font-family: 'Niramit', sans-serif;
+  color: #666;
+  font-weight: 400;
+}
+
+strong {
+  font-weight: 700;
+}
+
+footer,
+header {
+  float: left;
+  position: fixed;
+  -webkit-font-smoothing: subpixel-antialiased;
+}
+
+blockquote {
+  font-style: italic;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  color: #222;
+  margin: 0 0 20px;
+}
+
+dl,
+ol,
+p,
+pre,
+table,
+ul {
+  margin: 0 0 20px;
+}
+
+h1,
+h2,
+h3 {
+  line-height: 1.1;
+}
+
+h1 {
+  font-size: 33px;
+}
+
+h2, h3 {
+  font-size: 1.3em;
+}
+
+h2,
+h3 {
+  color: #393939;
+}
+
+h4,
+h5,
+h6 {
+  color: #494949;
+}
+
+a {
+  color: #39c;
+  text-decoration: none;
+}
+
+a:hover {
+  color: #069;
+}
+
+a small {
+  font-size: 11px;
+  margin-top: -0.3em;
+}
+
+header,
+header ul {
+  width: 270px;
+}
+
+blockquote {
+  border-left: 1px solid #e5e5e5;
+  margin: 0;
+  padding: 0 0 0 20px;
+  line-height: 1.75em;
+}
+
+code,
+pre {
+  font-family: Monaco, Bitstream Vera Sans Mono, Lucida Console, Terminal, Consolas, Liberation Mono, DejaVu Sans Mono, Courier New, monospace;
+  color: #333;
+  font-size: 12px;
+}
+
+pre {
+  padding: 8px 15px;
+  background: #f8f8f8;
+  border-radius: 5px;
+  border: 1px solid #e5e5e5;
+  overflow-x: auto;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th {
+  color: #444;
+}
+
+th,
+td {
+  text-align: center;
+  padding: 1px;
+}
+
+td {
+  width: 100%;
+}
+
+header ul a {
+  text-align: center;
+}
+
+img {
+  max-width: 100%;
+}
+
+header ul {
+  list-style: none;
+  height: 40px;
+  padding: 0;
+  background: #f4f4f4;
+  border-radius: 5px;
+  border: 1px solid #e0e0e0;
+}
+
+header li {
+  width: 89px;
+  float: left;
+  border-right: 1px solid #e0e0e0;
+  height: 40px;
+}
+
+header li:first-child a {
+  border-radius: 5px 0 0 5px;
+}
+
+header li:last-child a {
+  border-radius: 0 5px 5px 0;
+}
+
+header ul a {
+  line-height: 1;
+  font-size: 11px;
+  color: #999;
+  padding-top: 6px;
+  height: 34px;
+}
+
+header ul a:hover {
+  color: #999;
+}
+
+header ul a:active {
+  background-color: #f0f0f0;
+}
+
+strong {
+  color: #222;
+}
+
+header ul li+li+li {
+  border-right: none;
+  width: 89px;
+}
+
+header ul a strong {
+  font-size: 14px;
+  display: block;
+  color: #222;
+}
+
+section {
+  width: 500px;
+  float: right;
+  padding-bottom: 50px;
+}
+
+small {
+  font-size: 11px;
+}
+
+hr {
+  border: 0;
+  background: #e5e5e5;
+  height: 1px;
+  margin: 0 0 20px;
+}
+
+footer {
+  width: 270px;
+  bottom: 50px;
+}
+
+@media print, screen and (max-width: 960px) {
+  div.wrapper {
+    width: auto;
+    margin: 0;
+  }
+  footer,
+  header,
+  section {
+    float: none;
+    position: static;
+    width: auto;
+  }
+  header {
+    padding-right: 320px;
+  }
+  section {
+    border: 1px solid #e5e5e5;
+    border-width: 1px 0;
+    padding: 20px 0;
+    margin: 0 0 20px;
+  }
+  header a small {
+    display: inline;
+  }
+  header ul {
+    position: absolute;
+    right: 50px;
+    top: 52px;
+  }
+}
+
+@media print, screen and (max-width: 720px) {
+  body {
+    word-wrap: break-word;
+  }
+  header {
+    padding: 0;
+  }
+  header p.view,
+  header ul {
+    position: static;
+  }
+  code,
+  pre {
+    word-wrap: normal;
+  }
+}
+
+@media print, screen and (max-width: 480px) {
+  body {
+    padding: 15px;
+  }
+  header ul {
+    width: 99%;
+  }
+  header li,
+  header ul li+li+li {
+    width: 33%;
+  }
+}
+
+@media print {
+  body {
+    padding: .4in;
+    font-size: 12pt;
+    color: #444;
+  }
+}
+
+ol {
+  list-style-position: inside;
+  padding-left: 0;
+}
+
+p {
+  line-height: 1.5em !important;
+}
+
+.wrapper {
+  width: 650px;
+  margin: 0 auto;
+}
+
+.full-underline {
+  width: 100%;
+  border-bottom: 1px solid;
+  padding-bottom: 1px;
+  margin-bottom: 5px;
+}
+
+.intrinsic {
+  position: relative;
+  height: 0;
+  overflow: hidden;
+  padding-bottom: 56.25%;
+}
+
+.intrinsic iframe {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.justify-snippet {
+  padding-right: 2%;
+  text-align: justify;
+}
+
+.overline {
+  border-top: solid 1px #666;
+  margin-top: 3px;
+}
+
+.inner-table {
+  margin: 0;
+}
+
+.forced-caption-table {
+  margin-bottom: 0;
+}
+
+.forced-caption-div {
+  text-align: center;
+  margin-bottom: 20px;
+}
+
+.iframe-wrapper {
+  font-size: 0;
+}
+
+.left-iframe,
+.right-iframe {
+  display: inline-block;
+  box-sizing: border-box;
+  width: calc(50% - 2px);
+  padding: 1px;
+  height: 200px;
+}
+
+@media (max-width: 675px) {
+  .mathjax-resize {
+    font-size: .8em !important;
+  }
+}
+
+#title, #subtitle {
+  font-family: 'Text Me One', sans-serif;
+  text-align: center;
+}
