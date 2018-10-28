@@ -1,0 +1,100 @@
+op: train
+
+data:
+  data_dir: /media/owen/302371f7-852e-4f78-94e6-4d3ffebda36e
+  buffer_h: 65
+  buffer_w: 65
+
+train_params:
+  batch_size: 5
+  learning_rate: 1e-2
+  max_steps: 1e3
+  log_freq: 50
+  save_freq: 10000
+  summary_dir: summaries
+  checkpoint_dir: checkpoints
+  fp16: True
+
+kpcn:
+  incl_diff: True
+  incl_spec: False
+
+layers:
+  - type: conv2d
+    num_outputs: 100
+    kernel_size: 5
+    stride: 1
+    padding: same
+    activation: relu
+
+  - type: batch_normalization
+
+  - type: conv2d
+    num_outputs: 100
+    kernel_size: 5
+    stride: 1
+    padding: same
+    activation: relu
+
+  - type: batch_normalization
+
+  - type: conv2d
+    num_outputs: 100
+    kernel_size: 5
+    stride: 1
+    padding: same
+    activation: relu
+
+  - type: batch_normalization
+
+  - type: conv2d
+    num_outputs: 100
+    kernel_size: 5
+    stride: 1
+    padding: same
+    activation: relu
+
+  - type: batch_normalization
+
+  - type: conv2d
+    num_outputs: 100
+    kernel_size: 5
+    stride: 1
+    padding: same
+    activation: relu
+
+  - type: batch_normalization
+
+  - type: conv2d
+    num_outputs: 100
+    kernel_size: 5
+    stride: 1
+    padding: same
+    activation: relu
+
+  - type: batch_normalization
+
+  - type: conv2d
+    num_outputs: 100
+    kernel_size: 5
+    stride: 1
+    padding: same
+    activation: relu
+
+  - type: batch_normalization
+
+  - type: conv2d
+    num_outputs: 100
+    kernel_size: 5
+    stride: 1
+    padding: same
+    activation: relu
+
+  - type: batch_normalization
+
+  # output
+  - type: conv2d
+    num_outputs: 441  # 21 * 21
+    kernel_size: 5
+    stride: 1
+    padding: same
