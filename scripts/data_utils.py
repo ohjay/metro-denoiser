@@ -1,6 +1,7 @@
 import Imath
 import OpenEXR
 import numpy as np
+import tensorflow as tf
 import matplotlib.pyplot as plt
 from scipy.ndimage.filters import gaussian_filter
 
@@ -134,6 +135,22 @@ def split_channels(buffers):
 # TFRECORDS I/O
 # ===============================================
 
+N_CHANNELS = {
+    'diffuse':          3,
+    'diffuseVariance':  1,
+    'specular':         3,
+    'specularVariance': 1,
+    'albedo':           3,
+    'albedoVariance':   1,
+    'normal':           3,
+    'normalVariance':   1,
+    'depth':            1,
+    'depthVariance':    1,
+    'gt_diffuse':       3,
+    'gt_specular':      3,
+    'gt_albedo':        3,
+}
+
 def _bytes_feature(value):
     return tf.train.Feature(bytes_list=tf.train.BytesList(value=[value]))
 
@@ -147,7 +164,11 @@ def write_tfrecords(tfrecord_filepath, input_exr_files, gt_exr_files, patches_pe
         for input_filepath, gt_filepath in zip(input_exr_files, gt_exr_files):
             input_buffers = read_exr(input_filepath, fp16=fp16)
             input_buffers = stack_channels(input_buffers)
-            patch_indices = sample_patches(buffers, patches_per_im, patch_size, patch_size)
+            try:
+                patch_indices = sample_patches(input_buffers, patches_per_im, patch_size, patch_size)
+            except ValueError:
+                print('[-] Invalid value during %s sampling.' % input_filepath)
+                continue
 
             gt_buffers = read_exr(gt_filepath, fp16=fp16)
             gt_buffers = stack_channels(gt_buffers)
@@ -180,9 +201,72 @@ def write_tfrecords(tfrecord_filepath, input_exr_files, gt_exr_files, patches_pe
             print('[o] Wrote %d examples for %s.' % (len(patch_indices), input_filepath))
         print('[+] Finished writing examples to TFRecord file `%s`.' % tfrecord_filepath)
 
+def make_decode(is_diffuse, tf_dtype, buffer_h, buffer_w, eps):
+
+    def decode(serialized_example):
+        """De-serialize and preprocess TFRecord example."""
+        _features = {
+            'albedo':         tf.FixedLenFeature([], tf.string),
+            'albedoVariance': tf.FixedLenFeature([], tf.string),
+            'normal':         tf.FixedLenFeature([], tf.string),
+            'normalVariance': tf.FixedLenFeature([], tf.string),
+            'depth':          tf.FixedLenFeature([], tf.string),
+            'depthVariance':  tf.FixedLenFeature([], tf.string),
+        }
+        if is_diffuse:
+            _features['diffuse'] = tf.FixedLenFeature([], tf.string)
+            _features['diffuseVariance'] = tf.FixedLenFeature([], tf.string)
+            _features['gt_diffuse'] = tf.FixedLenFeature([], tf.string)
+            _features['gt_albedo'] = tf.FixedLenFeature([], tf.string)
+        else:
+            _features['specular'] = tf.FixedLenFeature([], tf.string)
+            _features['specularVariance'] = tf.FixedLenFeature([], tf.string)
+            _features['gt_specular'] = tf.FixedLenFeature([], tf.string)
+
+        features = tf.parse_single_example(serialized_example, _features)
+        p = {}  # "p" for "parsed"
+        for name in _features.keys():
+            p[name] = tf.decode_raw(features[name], tf_dtype)
+            p[name] = tf.reshape(p[name], [buffer_h, buffer_w, N_CHANNELS[name]])
+
+        # preprocess
+        if is_diffuse:
+            p['diffuse'] = tf_preprocess_diffuse(p['diffuse'], p['albedo'], eps)
+            p['gt_diffuse'] = tf_preprocess_diffuse(p['gt_diffuse'], p['gt_albedo'], eps)
+            p['diffuseVariance'] = tf_preprocess_diffuse_variance(
+                p['diffuseVariance'], p['albedo'], eps)
+        else:
+            p['specular'] = tf_preprocess_specular(p['specular'])
+            p['gt_specular'] = tf_preprocess_specular(p['gt_specular'])
+            p['specularVariance'] = tf_preprocess_specular_variance(
+                p['specular'], p['specularVariance'])
+        p['depth'], p['depthVariance'] = tf_preprocess_depth(p['depth'], p['depthVariance'])
+
+        variance_features = tf.concat([
+            p['normalVariance'],
+            p['albedoVariance'],
+            p['depthVariance']], axis=-1)
+
+        return (
+            p['diffuse'] if is_diffuse else p['specular'],
+            p['normal'],
+            p['albedo'],
+            p['depth'],
+            p['diffuseVariance'] if is_diffuse else p['specularVariance'],
+            variance_features,
+            p['gt_diffuse'] if is_diffuse else p['gt_specular'],
+        )  # i.e. always return 7 tensors
+
+    return decode
+
 # ===============================================
 # SAMPLING
 # ===============================================
+
+def invalid_complain(data):
+    """Raise an error if there are invalid values in the given NumPy array."""
+    if np.count_nonzero(np.isnan(data)) + np.count_nonzero(np.isinf(data)) > 0:
+        raise ValueError('invalid value')
 
 def gaussian_filter_wrapper(signal, sigma=1.0):
     """Perform Gaussian blurring, allowing for fp16 dtype."""
@@ -200,17 +284,20 @@ def sample_patches(buffers, num_patches, patch_h, patch_w):
     As per Bako et al., we will find candidate patches and prune based on color/normal variance.
     Operates in EXR buffer space (as opposed to tensor space).
     """
+    h, w = buffers['colorVariance'].shape[:2]
+    y_range = (patch_h // 2, h - patch_h // 2)  # [)
+    x_range = (patch_w // 2, w - patch_w // 2)  # [)
+
     # Define multivariate "PDF"
     pdf = np.squeeze(
         buffers['colorVariance'] + buffers['normalVariance'])  # (h, w)
     pdf = gaussian_filter_wrapper(pdf)  # blur as per Gharbi et al.
+    invalid_complain(pdf)
     pdf -= np.min(pdf)
+    if np.sum(pdf) == 0:
+        pdf += 1.0 / (h * w)
     pdf /= np.sum(pdf)  # now [0, 1] and sums to 1
     pdf += 0.1  # so we can multiplicatively tamper with "PDF" later
-
-    h, w = buffers['colorVariance'].shape[:2]
-    y_range = (patch_h // 2, h - patch_h // 2)  # [)
-    x_range = (patch_w // 2, w - patch_w // 2)  # [)
 
     patch_indices = []
     while len(patch_indices) < num_patches:
@@ -302,6 +389,37 @@ def postprocess_diffuse(out_diffuse, albedo, eps):
 def postprocess_specular(out_specular):
     """Apply exponential transform."""
     return np.exp(out_specular) - 1.0
+
+# ===============================================
+# PRE/POST-PROCESSING (TENSORFLOW)
+# ===============================================
+
+def tf_preprocess_diffuse(diffuse, albedo, eps):
+    return tf.divide(diffuse, albedo + eps)
+
+def tf_preprocess_diffuse_variance(diffuse_variance, albedo, eps):
+    mean_albedo = tf.reduce_mean(albedo, axis=-1)
+    mean_albedo = tf.expand_dims(mean_albedo, -1)
+    return tf.divide(diffuse_variance, tf.square(mean_albedo + eps))
+
+def tf_preprocess_specular(specular):
+    return tf.log(specular + 1.0)
+
+def tf_preprocess_specular_variance(specular, specular_variance):
+    mean_specular = tf.reduce_mean(specular, axis=-1)
+    mean_specular = tf.expand_dims(mean_specular, -1)
+    return tf.divide(specular_variance, tf.square(mean_specular) + 1e-5)
+
+def tf_preprocess_depth(depth, depth_variance):
+    _min = tf.reduce_min(depth)
+    _range = tf.reduce_max(depth) - _min
+    return tf.divide(depth - _min, _range), tf.divide(depth_variance, tf.square(_range))
+
+def tf_postprocess_diffuse(out_diffuse, albedo, eps):
+    return tf.multiply(out_diffuse, albedo + eps)
+
+def tf_postprocess_specular(out_specular):
+    return tf.exp(out_specular) - 1.0
 
 # ===============================================
 # VISUALIZATION

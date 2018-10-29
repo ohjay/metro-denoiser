@@ -1,15 +1,31 @@
 op: train
 
 data:
-  data_dir: /media/owen/302371f7-852e-4f78-94e6-4d3ffebda36e
-  buffer_h: 65
-  buffer_w: 65
-  patches_per_im: 5
+  data_dir: /media/owen/302371f7-852e-4f78-94e6-4d3ffebda36e/deep_learning_denoising/renderings
+  tfrecord_dir: /media/owen/302371f7-852e-4f78-94e6-4d3ffebda36e/renderings_tfrecords
+  scene_splits:
+    train:
+      - bathroom2
+      - car2
+      - classroom
+      - house
+      - room2
+      - spaceship
+    validation:
+      - staircase
+    test:
+      - room3
+  in_spp: 128
+  gt_spp: 8192
+  parse_start: 0
+  parse_skip: 10
+  patch_size: 65
+  patches_per_im: 400
 
 train_params:
   batch_size: 5
   learning_rate: 1e-2
-  max_steps: 1e3
+  max_epochs: 1e3
   log_freq: 50
   save_freq: 10000
   viz_freq: 50

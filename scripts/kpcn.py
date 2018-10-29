@@ -11,7 +11,7 @@ class KPCN(object):
     """
     curr_index = -1
 
-    def __init__(self, buffer_h, buffer_w, layers_config, is_training, learning_rate, summary_dir, scope=None, dtype=tf.float16):
+    def __init__(self, tf_buffers, buffer_h, buffer_w, layers_config, is_training, learning_rate, summary_dir, scope=None):
 
         self.is_training = is_training
 
@@ -21,13 +21,13 @@ class KPCN(object):
         with tf.variable_scope(self.scope, reuse=False):
             with tf.variable_scope('inputs'):
                 # color buffer
-                self.color = tf.placeholder(dtype, shape=(None, buffer_h, buffer_w, 3), name='color')
+                self.color = tf.identity(tf_buffers['color'], name='color')  # (?, h, w, 3)
                 # gradients (color, surface normals, albedo, depth)
-                self.grad_x = tf.placeholder(dtype, shape=(None, buffer_h, buffer_w, 10), name='grad_x')
-                self.grad_y = tf.placeholder(dtype, shape=(None, buffer_h, buffer_w, 10), name='grad_y')
+                self.grad_x = tf.identity(tf_buffers['grad_x'], name='grad_x')  # (?, h, w, 10)
+                self.grad_y = tf.identity(tf_buffers['grad_y'], name='grad_y')  # (?, h, w, 10)
                 # variance
-                self.var_color = tf.placeholder(dtype, shape=(None, buffer_h, buffer_w, 1), name='var_color')
-                self.var_features = tf.placeholder(dtype, shape=(None, buffer_h, buffer_w, 3), name='var_features')
+                self.var_color = tf.identity(tf_buffers['var_color'], name='var_color')  # (?, h, w, 1)
+                self.var_features = tf.identity(tf_buffers['var_features'], name='var_features')  # (?, h, w, 3)
 
             out = tf.concat((
                 self.color, self.grad_x, self.grad_y, self.var_color, self.var_features), axis=3)
@@ -52,7 +52,7 @@ class KPCN(object):
             self.out = self._filter(self.color, self.out_kernels)  # filtered color buffer
 
             # loss
-            self.gt_out = tf.placeholder(dtype, shape=(None, buffer_h, buffer_w, 3), name='gt_out')
+            self.gt_out = tf.identity(tf_buffers['gt_out'], name='gt_out')  # (?, h, w, 3)
             self.loss = tf.reduce_mean(tf.abs(self.out - self.gt_out), name='l1_loss')
             self.loss_summary = tf.summary.scalar('loss', self.loss)
 
@@ -99,19 +99,13 @@ class KPCN(object):
         }
         return sess.run(self.out, feed_dict)
 
-    def run_train_step(self, sess, batched_buffers, gt_out, iteration):
-        feed_dict = {
-            self.color: batched_buffers['color'],
-            self.grad_x: batched_buffers['grad_x'],
-            self.grad_y: batched_buffers['grad_y'],
-            self.var_color: batched_buffers['var_color'],
-            self.var_features: batched_buffers['var_features'],
-            self.gt_out: gt_out,
-        }
-        _, loss, loss_summary = sess.run([
-            self.opt_op, self.loss, self.loss_summary], feed_dict)
+    def run_train_step(self, sess, iteration):
+        _, loss, loss_summary = sess.run([self.opt_op, self.loss, self.loss_summary])
         self.train_writer.add_summary(loss_summary, iteration)
         return loss
+
+    def run_validation(self, sess):
+        return sess.run([self.out, self.loss])
 
     def save(self, sess, iteration, checkpoint_dir='checkpoints', write_meta_graph=True):
         if not os.path.exists(checkpoint_dir):
