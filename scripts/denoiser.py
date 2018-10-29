@@ -59,13 +59,18 @@ class Denoiser(object):
                 for epoch in range(max_epochs):
                     # Training
                     sess.run(init_ops['diff_train'])
+                    total_loss, count = 0.0, 0
                     while True:
                         try:
                             loss = self.diff_kpcn.run_train_step(sess, i)
+                            total_loss += loss
+                            count += batch_size
                             if (i + 1) % log_freq == 0:
-                                print('[step %07d] diff loss: %.5f' % (i, loss))
+                                print('[step %07d] diff loss: %.5f' % (i, total_loss / count))
+                                total_loss, count = 0.0, 0
                             if (i + 1) % save_freq == 0:
                                 self.diff_kpcn.save(sess, i, checkpoint_dir=os.path.join(checkpoint_dir, 'diff_kpcn'))
+                                print('[o] Saved model.')
                         except tf.errors.OutOfRangeError:
                             break
                         i += 1
@@ -76,10 +81,10 @@ class Denoiser(object):
                     while True:
                         try:
                             loss, _in, _out, _gt = self.diff_kpcn.run_validation(sess)
+                            if count == 0 and viz_freq > 0 and (i + 1) % viz_freq == 0:
+                                du.show_multiple(_in, _out, _gt)
                             total_loss += loss
                             count += batch_size
-                            if viz_freq > 0 and (i + 1) % viz_freq == 0:
-                                du.show_multiple(_in, _out, _gt)
                         except tf.errors.OutOfRangeError:
                             break
                     print('[o][diff] Validation loss: %.5f' % (total_loss / count,))
@@ -98,13 +103,18 @@ class Denoiser(object):
                 for epoch in range(max_epochs):
                     # Training
                     sess.run(init_ops['spec_train'])
+                    total_loss, count = 0.0, 0
                     while True:
                         try:
                             loss = self.spec_kpcn.run_train_step(sess, i)
+                            total_loss += loss
+                            count += batch_size
                             if (i + 1) % log_freq == 0:
-                                print('[step %07d] spec loss: %.5f' % (i, loss))
+                                print('[step %07d] spec loss: %.5f' % (i, total_loss / count))
+                                total_loss, count = 0.0, 0
                             if (i + 1) % save_freq == 0:
                                 self.spec_kpcn.save(sess, i, checkpoint_dir=os.path.join(checkpoint_dir, 'spec_kpcn'))
+                                print('[o] Saved model.')
                         except tf.errors.OutOfRangeError:
                             break
                         i += 1
@@ -115,10 +125,10 @@ class Denoiser(object):
                     while True:
                         try:
                             loss, _in, _out, _gt = self.spec_kpcn.run_validation(sess)
+                            if count == 0 and viz_freq > 0 and (i + 1) % viz_freq == 0:
+                                du.show_multiple(_in, _out, _gt)
                             total_loss += loss
                             count += batch_size
-                            if viz_freq > 0 and (i + 1) % viz_freq == 0:
-                                du.show_multiple(_in, _out, _gt)
                         except tf.errors.OutOfRangeError:
                             break
                     print('[o][spec] Validation loss: %.5f' % (total_loss / count,))
