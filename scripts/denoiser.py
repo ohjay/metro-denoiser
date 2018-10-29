@@ -75,12 +75,11 @@ class Denoiser(object):
                     total_loss, count = 0.0, 0
                     while True:
                         try:
-                            out, loss = self.diff_kpcn.run_validation(sess)
+                            loss, _in, _out, _gt = self.diff_kpcn.run_validation(sess)
                             total_loss += loss
                             count += batch_size
-                            # if viz_freq > 0 and (i + 1) % viz_freq == 0:
-                            #     out_diff = self.diff_kpcn.run(sess, batched_buffers_diff)
-                            #     du.show_multiple(batched_buffers_diff['color'], out_diff, gt_out_diff)
+                            if viz_freq > 0 and (i + 1) % viz_freq == 0:
+                                du.show_multiple(_in, _out, _gt)
                         except tf.errors.OutOfRangeError:
                             break
                     print('[o][diff] Validation loss: %.5f' % (total_loss / count,))
@@ -115,12 +114,11 @@ class Denoiser(object):
                     total_loss, count = 0.0, 0
                     while True:
                         try:
-                            out, loss = self.spec_kpcn.run_validation(sess)
+                            loss, _in, _out, _gt = self.spec_kpcn.run_validation(sess)
                             total_loss += loss
                             count += batch_size
-                            # if viz_freq > 0 and (i + 1) % viz_freq == 0:
-                            #     out_spec = self.spec_kpcn.run(sess, batched_buffers_spec)
-                            #     du.show_multiple(batched_buffers_spec['color'], out_spec, gt_out_spec)
+                            if viz_freq > 0 and (i + 1) % viz_freq == 0:
+                                du.show_multiple(_in, _out, _gt)
                         except tf.errors.OutOfRangeError:
                             break
                     print('[o][spec] Validation loss: %.5f' % (total_loss / count,))

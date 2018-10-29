@@ -105,7 +105,7 @@ class KPCN(object):
         return loss
 
     def run_validation(self, sess):
-        return sess.run([self.out, self.loss])
+        return sess.run([self.loss, self.color, self.out, self.gt_out])
 
     def save(self, sess, iteration, checkpoint_dir='checkpoints', write_meta_graph=True):
         if not os.path.exists(checkpoint_dir):
