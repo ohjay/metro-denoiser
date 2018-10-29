@@ -45,15 +45,15 @@ class Denoiser(object):
         tf_config = tf.ConfigProto(
             device_count={'GPU': 1}, allow_soft_placement=True)
         with tf.Session(config=tf_config) as sess:
-            # initialization
-            sess.run(tf.group(
-                tf.global_variables_initializer(), tf.local_variables_initializer()))
-
             # training loops
             if config['kpcn']['incl_diff']:
                 self.diff_kpcn = KPCN(
                     tf_buffers, patch_size, patch_size, layers_config,
                     is_training, learning_rate, summary_dir, scope='diffuse')
+
+                # initialization
+                sess.run(tf.group(
+                    tf.global_variables_initializer(), tf.local_variables_initializer()))
 
                 i = 0
                 for epoch in range(max_epochs):
@@ -90,6 +90,10 @@ class Denoiser(object):
                 self.spec_kpcn = KPCN(
                     tf_buffers, patch_size, patch_size, layers_config,
                     is_training, learning_rate, summary_dir, scope='specular')
+
+                # initialization
+                sess.run(tf.group(
+                    tf.global_variables_initializer(), tf.local_variables_initializer()))
 
                 i = 0
                 for epoch in range(max_epochs):
