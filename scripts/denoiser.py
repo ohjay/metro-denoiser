@@ -38,6 +38,7 @@ class Denoiser(object):
     def train(self, config):
         log_freq = config['train_params'].get('log_freq', 100)
         save_freq = config['train_params'].get('save_freq', 1000)
+        viz_freq = config['train_params'].get('viz_freq', -1)
         checkpoint_dir = config['train_params']['checkpoint_dir']
         max_steps = config['train_params'].get('max_steps', 1e9)
 
@@ -58,22 +59,28 @@ class Denoiser(object):
                 if config['kpcn']['incl_diff']:
                     diff_loss = self.diff_kpcn.run_train_step(sess, batched_buffers_diff, gt_out_diff, i)
                     if (i + 1) % log_freq == 0:
-                        print('[step %d] diff loss: %.5f' % (i, diff_loss))
+                        print('[step %07d] diff loss: %.5f' % (i, diff_loss))
                     if (i + 1) % save_freq == 0:
                         self.diff_kpcn.save(sess, i, checkpoint_dir=os.path.join(checkpoint_dir, 'diff_kpcn'))
+                    if viz_freq > 0 and (i + 1) % viz_freq == 0:
+                        out_diff = self.diff_kpcn.run(sess, batched_buffers_diff)
+                        du.show_multiple(batched_buffers_diff['color'], out_diff, gt_out_diff)
 
                 if config['kpcn']['incl_spec']:
                     spec_loss = self.spec_kpcn.run_train_step(sess, batched_buffers_spec, gt_out_spec, i)
                     if (i + 1) % log_freq == 0:
-                        print('[step %d] spec loss: %.5f' % (i, spec_loss))
+                        print('[step %07d] spec loss: %.5f' % (i, spec_loss))
                     if (i + 1) % save_freq == 0:
                         self.spec_kpcn.save(sess, i, checkpoint_dir=os.path.join(checkpoint_dir, 'spec_kpcn'))
+                    if viz_freq > 0 and (i + 1) % viz_freq == 0:
+                        out_spec = self.spec_kpcn.run(sess, batched_buffers_spec)
+                        du.show_multiple(batched_buffers_spec['color'], out_spec, gt_out_spec)
 
     def load_data(self, config):
         batch_size = config['train_params'].get('batch_size', 5)
 
         # the following code will change when I actually have a dataset
-        def parse_exr_file(filepath):
+        def parse_exr_file(filepath, patch_indices, patch_size):
             buffers = du.read_exr(filepath, fp16=self.fp16)
             buffers = du.stack_channels(buffers)
 
@@ -113,18 +120,33 @@ class Denoiser(object):
             for c, data in buffers_spec.items():
                 buffers_spec[c] = np.expand_dims(data, 0)
 
-            # [temp] take 65x65 patch
+            # split into patches
+            r = patch_size // 2
             for c, data in buffers_diff.items():
-                buffers_diff[c] = data[:, 300:365, 600:665, :]
+                patches = []
+                for y, x in patch_indices:
+                    patches.append(data[:, y-r:y+r+1, x-r:x+r+1, :])
+                buffers_diff[c] = np.concatenate(patches, axis=0)
             for c, data in buffers_spec.items():
-                buffers_spec[c] = data[:, 300:365, 600:665, :]
+                patches = []
+                for y, x in patch_indices:
+                    patches.append(data[:, y-r:y+r+1, x-r:x+r+1, :])
+                buffers_spec[c] = np.concatenate(patches, axis=0)
 
             return buffers_diff, buffers_spec
 
         in_path = '/home/owen/data/house-00128spp.exr'
         gt_path = '/home/owen/data/house-08192spp.exr'
-        in_batched_buffers_diff, in_batched_buffers_spec = parse_exr_file(in_path)
-        gt_batched_buffers_diff, gt_batched_buffers_spec = parse_exr_file(gt_path)
+
+        # [temp] take 65x65 patches
+        buffers = du.read_exr(in_path, fp16=self.fp16)
+        buffers = du.stack_channels(buffers)
+        patch_size = 65
+        patches_per_im = config['data'].get('patches_per_im', 400)  # todo: should be done beforehand, use batch size here
+        patch_indices = du.sample_patches(buffers, patches_per_im, patch_size, patch_size)
+
+        in_batched_buffers_diff, in_batched_buffers_spec = parse_exr_file(in_path, patch_indices, patch_size)
+        gt_batched_buffers_diff, gt_batched_buffers_spec = parse_exr_file(gt_path, patch_indices, patch_size)
 
         gt_out_diff = gt_batched_buffers_diff['color']
         gt_out_spec = gt_batched_buffers_spec['color']

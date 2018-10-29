@@ -1,6 +1,12 @@
 import Imath
 import OpenEXR
 import numpy as np
+import matplotlib.pyplot as plt
+from scipy.ndimage.filters import gaussian_filter
+
+# ===============================================
+# EXR I/O
+# ===============================================
 
 def read_exr(filepath, fp16=True):
     """
@@ -124,6 +130,108 @@ def split_channels(buffers):
                 'B': data[:, :, 2]}
     return buffers_out
 
+# ===============================================
+# TFRECORDS I/O
+# ===============================================
+
+def _bytes_feature(value):
+    return tf.train.Feature(bytes_list=tf.train.BytesList(value=[value]))
+
+def write_tfrecords(tfrecord_filepath, input_exr_files, gt_exr_files, patches_per_im, patch_size, fp16):
+    """Export PATCHES_PER_IM examples for each EXR file.
+    Accepts two lists of EXR filepaths with corresponding orderings.
+
+    Handles patch sampling but not preprocessing.
+    """
+    with tf.python_io.TFRecordWriter(tfrecord_filepath) as writer:
+        for input_filepath, gt_filepath in zip(input_exr_files, gt_exr_files):
+            input_buffers = read_exr(input_filepath, fp16=fp16)
+            input_buffers = stack_channels(input_buffers)
+            patch_indices = sample_patches(buffers, patches_per_im, patch_size, patch_size)
+
+            gt_buffers = read_exr(gt_filepath, fp16=fp16)
+            gt_buffers = stack_channels(gt_buffers)
+
+            # One example per patch
+            r = patch_size // 2
+            for y, x in patch_indices:
+                feature = {
+                    'diffuse':          input_buffers['diffuse'][y-r:y+r+1, x-r:x+r+1, :],
+                    'diffuseVariance':  input_buffers['diffuseVariance'][y-r:y+r+1, x-r:x+r+1, :],
+                    'specular':         input_buffers['specular'][y-r:y+r+1, x-r:x+r+1, :],
+                    'specularVariance': input_buffers['specularVariance'][y-r:y+r+1, x-r:x+r+1, :],
+                    'albedo':           input_buffers['albedo'][y-r:y+r+1, x-r:x+r+1, :],
+                    'albedoVariance':   input_buffers['albedoVariance'][y-r:y+r+1, x-r:x+r+1, :],
+                    'normal':           input_buffers['normal'][y-r:y+r+1, x-r:x+r+1, :],
+                    'normalVariance':   input_buffers['normalVariance'][y-r:y+r+1, x-r:x+r+1, :],
+                    'depth':            input_buffers['depth'][y-r:y+r+1, x-r:x+r+1, :],
+                    'depthVariance':    input_buffers['depthVariance'][y-r:y+r+1, x-r:x+r+1, :],
+                    'gt_diffuse':       gt_buffers['diffuse'][y-r:y+r+1, x-r:x+r+1, :],
+                    'gt_specular':      gt_buffers['specular'][y-r:y+r+1, x-r:x+r+1, :],
+                    'gt_albedo':        gt_buffers['albedo'][y-r:y+r+1, x-r:x+r+1, :],
+                }
+                for c, data in feature.items():
+                    if fp16:
+                        feature[c] = _bytes_feature(data.tobytes())
+                    else:
+                        feature[c] = _bytes_feature(tf.compat.as_bytes(data.tostring()))
+                example = tf.train.Example(features=tf.train.Features(feature=feature))
+                writer.write(example.SerializeToString())
+            print('[o] Wrote %d examples for %s.' % (len(patch_indices), input_filepath))
+        print('[+] Finished writing examples to TFRecord file `%s`.' % tfrecord_filepath)
+
+# ===============================================
+# SAMPLING
+# ===============================================
+
+def gaussian_filter_wrapper(signal, sigma=1.0):
+    """Perform Gaussian blurring, allowing for fp16 dtype."""
+    fp16 = signal.dtype == np.float16
+    if fp16:
+        signal = signal.astype(np.float32)
+    signal = gaussian_filter(signal, sigma=1.0)
+    if fp16:
+        signal = signal.astype(np.float16)
+    return signal
+
+def sample_patches(buffers, num_patches, patch_h, patch_w):
+    """
+    Sample NUM_PATCHES (y, x) indices for (PATCH_H, PATCH_W)-sized patches from the given frame.
+    As per Bako et al., we will find candidate patches and prune based on color/normal variance.
+    Operates in EXR buffer space (as opposed to tensor space).
+    """
+    # Define multivariate "PDF"
+    pdf = np.squeeze(
+        buffers['colorVariance'] + buffers['normalVariance'])  # (h, w)
+    pdf = gaussian_filter_wrapper(pdf)  # blur as per Gharbi et al.
+    pdf -= np.min(pdf)
+    pdf /= np.sum(pdf)  # now [0, 1] and sums to 1
+    pdf += 0.1  # so we can multiplicatively tamper with "PDF" later
+
+    h, w = buffers['colorVariance'].shape[:2]
+    y_range = (patch_h // 2, h - patch_h // 2)  # [)
+    x_range = (patch_w // 2, w - patch_w // 2)  # [)
+
+    patch_indices = []
+    while len(patch_indices) < num_patches:
+        # Uniformly sample candidate indices
+        y = np.random.randint(*y_range)
+        x = np.random.randint(*x_range)
+
+        # Reject according to "PDF," adjust "PDF" accordingly
+        if pdf[y, x] > np.random.random():
+            patch_indices.append([y, x])
+            pdf[y, x] *= 0.2
+        else:
+            pdf[y, x] *= 2.0
+
+    print('[o] Sampled %d patch indices.' % num_patches)
+    return np.array(patch_indices)  # (num_patches, 2)
+
+# ===============================================
+# PRE/POST-PROCESSING (NUMPY)
+# ===============================================
+
 def preprocess_diffuse(buffers, eps):
     """Factor out albedo. Destructive."""
     buffers['diffuse'] /= buffers['albedo'] + eps
@@ -194,3 +302,30 @@ def postprocess_diffuse(out_diffuse, albedo, eps):
 def postprocess_specular(out_specular):
     """Apply exponential transform."""
     return np.exp(out_specular) - 1.0
+
+# ===============================================
+# VISUALIZATION
+# ===============================================
+
+def show_multiple(*ims, **kwargs):
+    """Plot multiple images in one grid.
+    By default, the maximum row length is three.
+    """
+    # Determine number of rows and columns
+    row_max = kwargs.get('row_max', 3)
+    nrows, ncols = len(ims) // row_max, len(ims) % row_max
+    if ncols == 0:
+        ncols = row_max
+    else:
+        nrows += 1
+
+    fig, ax = plt.subplots(nrows, ncols, squeeze=False)
+    for j, im in enumerate(ims):
+        _im = im
+        while len(_im.shape) > 3:
+            _im = _im[0]  # eliminate batch dims
+        if _im.dtype == np.float16:
+            _im = _im.astype(np.float32)
+        ax[j // row_max, j % row_max].imshow(_im)
+
+    plt.show()

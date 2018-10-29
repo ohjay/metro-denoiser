@@ -4,6 +4,7 @@ data:
   data_dir: /media/owen/302371f7-852e-4f78-94e6-4d3ffebda36e
   buffer_h: 65
   buffer_w: 65
+  patches_per_im: 5
 
 train_params:
   batch_size: 5
@@ -11,9 +12,10 @@ train_params:
   max_steps: 1e3
   log_freq: 50
   save_freq: 10000
+  viz_freq: 50
   summary_dir: summaries
   checkpoint_dir: checkpoints
-  fp16: True
+  fp16: False
 
 kpcn:
   incl_diff: True
