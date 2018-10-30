@@ -133,7 +133,7 @@ class Denoiser(object):
                 self._training_loop(sess, self.spec_kpcn, init_ops['spec_train'], init_ops['spec_val'], 'spec',
                     log_freq, save_freq, viz_freq, max_epochs, spec_checkpoint_dir, block_on_viz)
 
-    def load_data(self, config):
+    def load_data(self, config, shuffle=True):
         batch_size = config['train_params'].get('batch_size', 5)
         patch_size = config['data'].get('patch_size', 65)
         tfrecord_dir = config['data']['tfrecord_dir']
@@ -168,7 +168,8 @@ class Denoiser(object):
                 else:
                     dataset_size = min(val_dataset_size_estimate, size_lim)
                 datasets[comp] = datasets[comp].cache()
-                datasets[comp] = datasets[comp].shuffle(dataset_size)
+                if shuffle:
+                    datasets[comp] = datasets[comp].shuffle(dataset_size)
                 datasets[comp] = datasets[comp].batch(batch_size)
                 datasets[comp] = datasets[comp].prefetch(1)
 
@@ -258,7 +259,7 @@ class Denoiser(object):
                     tfrecord_filepath, _in_files, _gt_files, patches_per_im, patch_size, self.fp16, shuffle=pshuffle)
 
     def visualize_data(self, config):
-        tf_buffers, init_ops = self.load_data(config)
+        tf_buffers, init_ops = self.load_data(config, shuffle=False)
         tf_config = tf.ConfigProto(device_count={'GPU': 1}, allow_soft_placement=True)
         with tf.Session(config=tf_config) as sess:
             group = ''
