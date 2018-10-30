@@ -1,3 +1,4 @@
+import os
 import Imath
 import OpenEXR
 import numpy as np
@@ -198,7 +199,10 @@ def write_tfrecords(tfrecord_filepath, input_exr_files, gt_exr_files, patches_pe
                         feature[c] = _bytes_feature(tf.compat.as_bytes(data.tostring()))
                 example = tf.train.Example(features=tf.train.Features(feature=feature))
                 writer.write(example.SerializeToString())
-            print('[o] Wrote %d examples for %s.' % (len(patch_indices), input_filepath))
+            input_dirname = os.path.dirname(input_filepath)
+            input_basename = os.path.basename(input_filepath)
+            input_id = os.path.join(os.path.basename(input_dirname), input_basename)
+            print('[o] Wrote %d examples for %s.' % (len(patch_indices), input_id))
         print('[+] Finished writing examples to TFRecord file `%s`.' % tfrecord_filepath)
 
 def make_decode(is_diffuse, tf_dtype, buffer_h, buffer_w, eps):
@@ -428,22 +432,47 @@ def tf_postprocess_specular(out_specular):
 def show_multiple(*ims, **kwargs):
     """Plot multiple images in one grid.
     By default, the maximum row length is three.
+
+    Assumes that each image in IMS is either
+    an [h, w, c]-array or an [n, h, w, c]-array.
     """
-    # Determine number of rows and columns
     row_max = kwargs.get('row_max', 3)
+    batch_max = kwargs.get('batch_max', 5)  # viz at most 5 examples per batch
+    block_on_viz = kwargs.get('block_on_viz', False)
+
+    if not block_on_viz:
+        plt.ion()
+        plt.show()
+
+    # Determine number of rows and columns
     nrows, ncols = len(ims) // row_max, len(ims) % row_max
     if ncols == 0:
         ncols = row_max
     else:
         nrows += 1
+    base_nrows = nrows
+    if len(ims[0].shape) == 4:
+        nrows *= min(len(ims[0].shape), batch_max)
 
     fig, ax = plt.subplots(nrows, ncols, squeeze=False)
     for j, im in enumerate(ims):
         _im = im
-        while len(_im.shape) > 3:
-            _im = _im[0]  # eliminate batch dims
         if _im.dtype == np.float16:
             _im = _im.astype(np.float32)
-        ax[j // row_max, j % row_max].imshow(_im)
+        if len(_im.shape) == 4:
+            for k in range(min(len(_im.shape), batch_max)):
+                row = base_nrows * k + j // row_max
+                ax[row, j % row_max].imshow(_im[k])
+                ax[row, j % row_max].set_axis_off()
+        else:
+            ax[j // row_max, j % row_max].imshow(_im)
+            ax[j // row_max, j % row_max].set_axis_off()
 
-    plt.show()
+    if block_on_viz:
+        plt.show()
+    else:
+        try:
+            plt.pause(10)
+            plt.close()
+        except:
+            pass  # in case user closes window herself

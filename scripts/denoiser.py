@@ -33,6 +33,7 @@ class Denoiser(object):
         is_training = config['op'] == 'train'
         learning_rate = config['train_params']['learning_rate']
         summary_dir = config['train_params'].get('summary_dir', 'summaries')
+        block_on_viz = config['train_params'].get('block_on_viz', False)
 
         if type(learning_rate) == str:
             learning_rate = eval(learning_rate)
@@ -74,6 +75,7 @@ class Denoiser(object):
                         except tf.errors.OutOfRangeError:
                             break
                         i += 1
+                    print('[o][diff] Epoch %d training complete. Running validation...' % (epoch + 1,))
 
                     # Validation
                     sess.run(init_ops['diff_val'])
@@ -82,13 +84,13 @@ class Denoiser(object):
                         try:
                             loss, _in, _out, _gt = self.diff_kpcn.run_validation(sess)
                             if count == 0 and viz_freq > 0 and (i + 1) % viz_freq == 0:
-                                du.show_multiple(_in, _out, _gt)
+                                du.show_multiple(_in, _out, _gt, block_on_viz=block_on_viz)
                             total_loss += loss
                             count += batch_size
                         except tf.errors.OutOfRangeError:
                             break
                     print('[o][diff] Validation loss: %.5f' % (total_loss / count,))
-                    print('[o][diff] Epoch %d complete.' % epoch)
+                    print('[o][diff] Epoch %d complete.' % (epoch + 1,))
 
             if config['kpcn']['incl_spec']:
                 self.spec_kpcn = KPCN(
@@ -118,6 +120,7 @@ class Denoiser(object):
                         except tf.errors.OutOfRangeError:
                             break
                         i += 1
+                    print('[o][diff] Epoch %d training complete. Running validation...' % (epoch + 1,))
 
                     # Validation
                     sess.run(init_ops['spec_val'])
@@ -126,68 +129,72 @@ class Denoiser(object):
                         try:
                             loss, _in, _out, _gt = self.spec_kpcn.run_validation(sess)
                             if count == 0 and viz_freq > 0 and (i + 1) % viz_freq == 0:
-                                du.show_multiple(_in, _out, _gt)
+                                du.show_multiple(_in, _out, _gt, block_on_viz=block_on_viz)
                             total_loss += loss
                             count += batch_size
                         except tf.errors.OutOfRangeError:
                             break
                     print('[o][spec] Validation loss: %.5f' % (total_loss / count,))
-                    print('[o][spec] Epoch %d complete.' % epoch)
+                    print('[o][spec] Epoch %d complete.' % (epoch + 1,))
 
     def load_data(self, config):
         batch_size = config['train_params'].get('batch_size', 5)
         patch_size = config['data'].get('patch_size', 65)
         tfrecord_dir = config['data']['tfrecord_dir']
-        scene_splits = config['data']['scene_splits']
+        scenes = config['data']['scenes']
 
         train_filenames = [
-            os.path.join(tfrecord_dir, scene, 'data.tfrecords') for scene in scene_splits['train']]
+            os.path.join(tfrecord_dir, scene, 'train', 'data.tfrecords') for scene in scenes]
         val_filenames = [
-            os.path.join(tfrecord_dir, scene, 'data.tfrecords') for scene in scene_splits['validation']]
-        train_dataset = tf.data.TFRecordDataset(train_filenames)
-        val_dataset   = tf.data.TFRecordDataset(val_filenames)
+            os.path.join(tfrecord_dir, scene, 'validation', 'data.tfrecords') for scene in scenes]
 
-        pskip = config['data'].get('parse_skip', 1)
-        patches_per_im = config['data'].get('patches_per_im', 400)
-        train_dataset_size_estimate = (int(200 / pskip) * patches_per_im) * len(train_filenames)
-        val_dataset_size_estimate   = (int(200 / pskip) * patches_per_im) * len(val_filenames)
+        with tf.device('/cpu:0'):
+            train_dataset = tf.data.TFRecordDataset(train_filenames)
+            val_dataset   = tf.data.TFRecordDataset(val_filenames)
 
-        decode_diff = du.make_decode(True, self.tf_dtype, patch_size, patch_size, self.eps)
-        decode_spec = du.make_decode(False, self.tf_dtype, patch_size, patch_size, self.eps)
-        datasets = {
-            'diff_train': train_dataset.map(decode_diff),
-            'spec_train': train_dataset.map(decode_spec),
-            'diff_val': val_dataset.map(decode_diff),
-            'spec_val': val_dataset.map(decode_spec),
-        }
-        for comp in datasets:
-            if comp.endswith('train'):
-                dataset_size = train_dataset_size_estimate
-            else:
-                dataset_size = val_dataset_size_estimate
-            datasets[comp] = datasets[comp].cache()
-            datasets[comp] = datasets[comp].shuffle(dataset_size)
-            datasets[comp] = datasets[comp].batch(batch_size)
+            pstep = config['data'].get('parse_step', 1)
+            patches_per_im = config['data'].get('patches_per_im', 400)
+            train_dataset_size_estimate = (int(200 / pstep) * patches_per_im) * len(train_filenames)
+            val_dataset_size_estimate   = (int(200 / pstep) * patches_per_im) * len(val_filenames)
+            size_lim = config['data'].get('shuffle_buffer_size_limit', 80000)
 
-        # shared iterator
-        iterator = tf.data.Iterator.from_structure(
-            datasets['diff_train'].output_types, datasets['diff_train'].output_shapes)
-        color, normal, albedo, depth, var_color, var_features, gt_out = iterator.get_next()
+            decode_diff = du.make_decode(True, self.tf_dtype, patch_size, patch_size, self.eps)
+            decode_spec = du.make_decode(False, self.tf_dtype, patch_size, patch_size, self.eps)
+            datasets = {
+                'diff_train': train_dataset.map(decode_diff, num_parallel_calls=4),
+                'spec_train': train_dataset.map(decode_spec, num_parallel_calls=4),
+                'diff_val': val_dataset.map(decode_diff, num_parallel_calls=4),
+                'spec_val': val_dataset.map(decode_spec, num_parallel_calls=4),
+            }
+            for comp in datasets:
+                if comp.endswith('train'):
+                    dataset_size = min(train_dataset_size_estimate, size_lim)
+                else:
+                    dataset_size = min(val_dataset_size_estimate, size_lim)
+                datasets[comp] = datasets[comp].cache()
+                datasets[comp] = datasets[comp].shuffle(dataset_size)
+                datasets[comp] = datasets[comp].batch(batch_size)
+                datasets[comp] = datasets[comp].prefetch(1)
 
-        # initializers
-        diff_train_init_op = iterator.make_initializer(datasets['diff_train'])
-        spec_train_init_op = iterator.make_initializer(datasets['spec_train'])
-        diff_val_init_op   = iterator.make_initializer(datasets['diff_val'])
-        spec_val_init_op   = iterator.make_initializer(datasets['spec_val'])
+            # shared iterator
+            iterator = tf.data.Iterator.from_structure(
+                datasets['diff_train'].output_types, datasets['diff_train'].output_shapes)
+            color, normal, albedo, depth, var_color, var_features, gt_out = iterator.get_next()
 
-        # compute gradients
-        grad_y_color, grad_x_color = tf.image.image_gradients(color)
-        grad_y_normal, grad_x_normal = tf.image.image_gradients(normal)
-        grad_y_albedo, grad_x_albedo = tf.image.image_gradients(albedo)
-        grad_y_depth, grad_x_depth = tf.image.image_gradients(depth)
+            # initializers
+            diff_train_init_op = iterator.make_initializer(datasets['diff_train'])
+            spec_train_init_op = iterator.make_initializer(datasets['spec_train'])
+            diff_val_init_op   = iterator.make_initializer(datasets['diff_val'])
+            spec_val_init_op   = iterator.make_initializer(datasets['spec_val'])
 
-        grad_y = tf.concat([grad_y_color, grad_y_normal, grad_y_albedo, grad_y_depth], -1)
-        grad_x = tf.concat([grad_x_color, grad_x_normal, grad_x_albedo, grad_x_depth], -1)
+            # compute gradients
+            grad_y_color, grad_x_color = tf.image.image_gradients(color)
+            grad_y_normal, grad_x_normal = tf.image.image_gradients(normal)
+            grad_y_albedo, grad_x_albedo = tf.image.image_gradients(albedo)
+            grad_y_depth, grad_x_depth = tf.image.image_gradients(depth)
+
+            grad_y = tf.concat([grad_y_color, grad_y_normal, grad_y_albedo, grad_y_depth], -1)
+            grad_x = tf.concat([grad_x_color, grad_x_normal, grad_x_albedo, grad_x_depth], -1)
 
         tf_buffers = {
             'color': color,
@@ -208,7 +215,8 @@ class Denoiser(object):
     def sample_data(self, config):
         """Write data to TFRecords files for later use."""
         data_dir = config['data']['data_dir']
-        scene_splits = config['data']['scene_splits']
+        scenes = config['data']['scenes']
+        splits = config['data']['splits']
         in_filename = '*-%sspp.exr' % str(config['data']['in_spp']).zfill(5)
         gt_filename = '*-%sspp.exr' % str(config['data']['gt_spp']).zfill(5)
 
@@ -220,24 +228,31 @@ class Denoiser(object):
         patches_per_im = config['data'].get('patches_per_im', 400)
 
         pstart = config['data'].get('parse_start', 0)
-        pskip = config['data'].get('parse_skip', 1)
+        pstep = config['data'].get('parse_step', 1)
 
-        for s in {'train', 'validation', 'test'}:
-            for scene in scene_splits[s]:
-                input_exr_files = sorted(glob.glob(os.path.join(data_dir, scene, in_filename)))
-                gt_exr_files    = sorted(glob.glob(os.path.join(data_dir, scene, gt_filename)))
-                # can skip files if on a time/memory budget
-                input_exr_files = [f for i, f in enumerate(input_exr_files[pstart:]) if i % pskip == 0]
-                gt_exr_files    = [f for i, f in enumerate(gt_exr_files[pstart:])    if i % pskip == 0]
-                print('[o] Using %d permutations for scene %s.' % (len(input_exr_files), scene))
+        for scene in scenes:
+            input_exr_files = sorted(glob.glob(os.path.join(data_dir, scene, in_filename)))
+            gt_exr_files    = sorted(glob.glob(os.path.join(data_dir, scene, gt_filename)))
+            # can skip files if on a time/memory budget
+            input_exr_files = [f for i, f in enumerate(input_exr_files[pstart:]) if i % pstep == 0]
+            gt_exr_files    = [f for i, f in enumerate(gt_exr_files[pstart:])    if i % pstep == 0]
+            print('[o] Using %d permutations for scene %s.' % (len(input_exr_files), scene))
 
-                tfrecord_scene_dir = os.path.join(tfrecord_dir, scene)
-                if not os.path.exists(tfrecord_scene_dir):
-                    os.makedirs(tfrecord_scene_dir)
-                tfrecord_filepath = os.path.join(tfrecord_scene_dir, 'data.tfrecords')
+            end = 0
+            for split in ['train', 'validation', 'test']:  # train gets the first 0.X, val gets the next 0.X, ...
+                start = end  # [
+                end = start + int(round(splits[split] * len(input_exr_files)))  # )
+                if split == 'test':
+                    end = len(input_exr_files)
+                print('[o] %s split: %d/%d permutations.' % (split, end - start, len(input_exr_files)))
 
+                tfrecord_scene_split_dir = os.path.join(tfrecord_dir, scene, split)
+                if not os.path.exists(tfrecord_scene_split_dir):
+                    os.makedirs(tfrecord_scene_split_dir)
+                tfrecord_filepath = os.path.join(tfrecord_scene_split_dir, 'data.tfrecords')
                 du.write_tfrecords(
-                    tfrecord_filepath, input_exr_files, gt_exr_files, patches_per_im, patch_size, self.fp16)
+                    tfrecord_filepath, input_exr_files[start:end],
+                    gt_exr_files[start:end], patches_per_im, patch_size, self.fp16)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
