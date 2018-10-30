@@ -2,6 +2,7 @@ import os
 import glob
 import yaml
 import time
+import random
 import argparse
 import numpy as np
 import tensorflow as tf
@@ -242,17 +243,23 @@ class Denoiser(object):
             for split in ['train', 'validation', 'test']:  # train gets the first 0.X, val gets the next 0.X, ...
                 start = end  # [
                 end = start + int(round(splits[split] * len(input_exr_files)))  # )
-                if split == 'test':
+                if split == 'test' and sum(splits.values()) == 1.0:
                     end = len(input_exr_files)
                 print('[o] %s split: %d/%d permutations.' % (split, end - start, len(input_exr_files)))
+
+                # shuffle
+                _in_files = input_exr_files[start:end]
+                _gt_files = gt_exr_files[start:end]
+                _in_gt_paired = list(zip(_in_files, _gt_files))
+                random.shuffle(_in_gt_paired)
+                _in_files, gt_files = zip(*_in_gt_paired)
 
                 tfrecord_scene_split_dir = os.path.join(tfrecord_dir, scene, split)
                 if not os.path.exists(tfrecord_scene_split_dir):
                     os.makedirs(tfrecord_scene_split_dir)
                 tfrecord_filepath = os.path.join(tfrecord_scene_split_dir, 'data.tfrecords')
                 du.write_tfrecords(
-                    tfrecord_filepath, input_exr_files[start:end],
-                    gt_exr_files[start:end], patches_per_im, patch_size, self.fp16)
+                    tfrecord_filepath, _in_files, _gt_files, patches_per_im, patch_size, self.fp16)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()

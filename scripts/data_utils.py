@@ -1,5 +1,6 @@
 import os
 import Imath
+import random
 import OpenEXR
 import numpy as np
 import tensorflow as tf
@@ -155,13 +156,23 @@ N_CHANNELS = {
 def _bytes_feature(value):
     return tf.train.Feature(bytes_list=tf.train.BytesList(value=[value]))
 
-def write_tfrecords(tfrecord_filepath, input_exr_files, gt_exr_files, patches_per_im, patch_size, fp16):
+def write_tfrecords(tfrecord_filepath, input_exr_files, gt_exr_files,
+                    patches_per_im, patch_size, fp16, shuffle=False):
     """Export PATCHES_PER_IM examples for each EXR file.
     Accepts two lists of EXR filepaths with corresponding orderings.
 
     Handles patch sampling but not preprocessing.
     """
     with tf.python_io.TFRecordWriter(tfrecord_filepath) as writer:
+        all_examples = []
+        all_examples_size_limit = patches_per_im * 50  # essentially, shuffle buffer lim = 50 ims
+
+        def shuffle_and_write():
+            random.shuffle(all_examples)
+            for example in all_examples:
+                writer.write(example.SerializeToString())
+            print('[+] Wrote %d examples to TFRecord file `%s`.' % (len(all_examples), tfrecord_filepath))
+
         for input_filepath, gt_filepath in zip(input_exr_files, gt_exr_files):
             input_buffers = read_exr(input_filepath, fp16=fp16)
             input_buffers = stack_channels(input_buffers)
@@ -198,12 +209,25 @@ def write_tfrecords(tfrecord_filepath, input_exr_files, gt_exr_files, patches_pe
                     else:
                         feature[c] = _bytes_feature(tf.compat.as_bytes(data.tostring()))
                 example = tf.train.Example(features=tf.train.Features(feature=feature))
-                writer.write(example.SerializeToString())
+                if shuffle:
+                    all_examples.append(example)
+                else:
+                    writer.write(example.SerializeToString())
             input_dirname = os.path.dirname(input_filepath)
             input_basename = os.path.basename(input_filepath)
             input_id = os.path.join(os.path.basename(input_dirname), input_basename)
-            print('[o] Wrote %d examples for %s.' % (len(patch_indices), input_id))
-        print('[+] Finished writing examples to TFRecord file `%s`.' % tfrecord_filepath)
+            print('[o] Collected %d examples for %s.' % (len(patch_indices), input_id))
+
+            if shuffle and len(all_examples) >= all_examples_size_limit:
+                shuffle_and_write()
+                del all_examples[:]
+
+        # (final) shuffle
+        if shuffle:
+            if len(all_examples) > 0:
+                shuffle_and_write()
+        else:
+            print('[+] Wrote examples to TFRecord file `%s`.' % tfrecord_filepath)
 
 def make_decode(is_diffuse, tf_dtype, buffer_h, buffer_w, eps):
 
