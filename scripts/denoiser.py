@@ -1,4 +1,5 @@
 import os
+import sys
 import glob
 import yaml
 import time
@@ -21,6 +22,72 @@ class Denoiser(object):
         self.spec_kpcn = None
         self.fp16 = config['train_params'].get('fp16', True)
         self.tf_dtype = tf.float16 if self.fp16 else tf.float32
+
+    @staticmethod
+    def _training_loop(sess, kpcn, train_init_op, val_init_op, identifier,
+                       log_freq, save_freq, viz_freq, max_epochs, checkpoint_dir, block_on_viz):
+        # initialization
+        sess.run(tf.group(
+            tf.global_variables_initializer(), tf.local_variables_initializer()))
+
+        i = 0
+        min_avg_train_loss = float('inf')
+        min_avg_val_loss   = float('inf')
+        try:
+            for epoch in range(max_epochs):
+                # Training
+                sess.run(train_init_op)
+                total_loss, count = 0.0, 0
+                while True:
+                    try:
+                        loss = kpcn.run_train_step(sess, i)
+                        total_loss += loss
+                        count += 1
+                        if (i + 1) % log_freq == 0:
+                            avg_loss = total_loss / count
+                            if avg_loss < min_avg_train_loss:
+                                min_avg_train_loss = avg_loss
+                            print('[step %07d] %s loss: %.5f' % (i, identifier, avg_loss))
+                            total_loss, count = 0.0, 0
+                        if (i + 1) % save_freq == 0:
+                            kpcn.save(sess, i, checkpoint_dir=checkpoint_dir)
+                            print('[o] Saved model.')
+                    except tf.errors.OutOfRangeError:
+                        break
+                    i += 1
+                print('[o][%s] Epoch %d training complete. Running validation...' % (identifier, epoch + 1,))
+
+                # Validation
+                sess.run(val_init_op)
+                total_loss, count = 0.0, 0
+                while True:
+                    try:
+                        loss, _in, _out, _gt = kpcn.run_validation(sess)
+                        if count == 0 and viz_freq > 0 and (i + 1) % viz_freq == 0:
+                            du.show_multiple(_in, _out, _gt, block_on_viz=block_on_viz)
+                        total_loss += loss
+                        count += 1
+                    except tf.errors.OutOfRangeError:
+                        break
+                avg_loss = total_loss / count
+                if avg_loss < min_avg_val_loss:
+                    min_avg_val_loss = avg_loss
+                loss_summary = sess.run(kpcn.loss_summary, {kpcn.loss: avg_loss})
+                kpcn.validation_writer.add_summary(loss_summary, i)
+                print('[o][%s] Validation loss: %.5f' % (identifier, avg_loss))
+                print('[o][%s] Epoch %d complete.' % (identifier, epoch + 1))
+        except KeyboardInterrupt:
+            print('[KeyboardInterrupt] summary')
+            print('---------------------------')
+            print('[o] min avg train loss: %.4f' % min_avg_train_loss)
+            print('[o] min_avg_val_loss:   %.4f' % min_avg_val_loss)
+            print('[o] total steps:        %d' % i)
+            print('---------------------------')
+            print('exiting...')
+            try:
+                sys.exit(0)
+            except SystemExit:
+                os._exit(0)
 
     def train(self, config):
         log_freq = config['train_params'].get('log_freq', 100)
@@ -53,90 +120,18 @@ class Denoiser(object):
                     tf_buffers, patch_size, patch_size, layers_config,
                     is_training, learning_rate, summary_dir, scope='diffuse')
 
-                # initialization
-                sess.run(tf.group(
-                    tf.global_variables_initializer(), tf.local_variables_initializer()))
-
-                i = 0
-                for epoch in range(max_epochs):
-                    # Training
-                    sess.run(init_ops['diff_train'])
-                    total_loss, count = 0.0, 0
-                    while True:
-                        try:
-                            loss = self.diff_kpcn.run_train_step(sess, i)
-                            total_loss += loss
-                            count += batch_size
-                            if (i + 1) % log_freq == 0:
-                                print('[step %07d] diff loss: %.5f' % (i, total_loss / count))
-                                total_loss, count = 0.0, 0
-                            if (i + 1) % save_freq == 0:
-                                self.diff_kpcn.save(sess, i, checkpoint_dir=os.path.join(checkpoint_dir, 'diff_kpcn'))
-                                print('[o] Saved model.')
-                        except tf.errors.OutOfRangeError:
-                            break
-                        i += 1
-                    print('[o][diff] Epoch %d training complete. Running validation...' % (epoch + 1,))
-
-                    # Validation
-                    sess.run(init_ops['diff_val'])
-                    total_loss, count = 0.0, 0
-                    while True:
-                        try:
-                            loss, _in, _out, _gt = self.diff_kpcn.run_validation(sess)
-                            if count == 0 and viz_freq > 0 and (i + 1) % viz_freq == 0:
-                                du.show_multiple(_in, _out, _gt, block_on_viz=block_on_viz)
-                            total_loss += loss
-                            count += batch_size
-                        except tf.errors.OutOfRangeError:
-                            break
-                    print('[o][diff] Validation loss: %.5f' % (total_loss / count,))
-                    print('[o][diff] Epoch %d complete.' % (epoch + 1,))
+                diff_checkpoint_dir = os.path.join(checkpoint_dir, 'diff_kpcn')
+                self._training_loop(sess, self.diff_kpcn, init_ops['diff_train'], init_ops['diff_val'], 'diff',
+                    log_freq, save_freq, viz_freq, max_epochs, diff_checkpoint_dir, block_on_viz)
 
             if config['kpcn']['incl_spec']:
                 self.spec_kpcn = KPCN(
                     tf_buffers, patch_size, patch_size, layers_config,
                     is_training, learning_rate, summary_dir, scope='specular')
 
-                # initialization
-                sess.run(tf.group(
-                    tf.global_variables_initializer(), tf.local_variables_initializer()))
-
-                i = 0
-                for epoch in range(max_epochs):
-                    # Training
-                    sess.run(init_ops['spec_train'])
-                    total_loss, count = 0.0, 0
-                    while True:
-                        try:
-                            loss = self.spec_kpcn.run_train_step(sess, i)
-                            total_loss += loss
-                            count += batch_size
-                            if (i + 1) % log_freq == 0:
-                                print('[step %07d] spec loss: %.5f' % (i, total_loss / count))
-                                total_loss, count = 0.0, 0
-                            if (i + 1) % save_freq == 0:
-                                self.spec_kpcn.save(sess, i, checkpoint_dir=os.path.join(checkpoint_dir, 'spec_kpcn'))
-                                print('[o] Saved model.')
-                        except tf.errors.OutOfRangeError:
-                            break
-                        i += 1
-                    print('[o][diff] Epoch %d training complete. Running validation...' % (epoch + 1,))
-
-                    # Validation
-                    sess.run(init_ops['spec_val'])
-                    total_loss, count = 0.0, 0
-                    while True:
-                        try:
-                            loss, _in, _out, _gt = self.spec_kpcn.run_validation(sess)
-                            if count == 0 and viz_freq > 0 and (i + 1) % viz_freq == 0:
-                                du.show_multiple(_in, _out, _gt, block_on_viz=block_on_viz)
-                            total_loss += loss
-                            count += batch_size
-                        except tf.errors.OutOfRangeError:
-                            break
-                    print('[o][spec] Validation loss: %.5f' % (total_loss / count,))
-                    print('[o][spec] Epoch %d complete.' % (epoch + 1,))
+                spec_checkpoint_dir = os.path.join(checkpoint_dir, 'spec_kpcn')
+                self._training_loop(sess, self.spec_kpcn, init_ops['spec_train'], init_ops['spec_val'], 'spec',
+                    log_freq, save_freq, viz_freq, max_epochs, spec_checkpoint_dir, block_on_viz)
 
     def load_data(self, config):
         batch_size = config['train_params'].get('batch_size', 5)
@@ -230,6 +225,7 @@ class Denoiser(object):
 
         pstart = config['data'].get('parse_start', 0)
         pstep = config['data'].get('parse_step', 1)
+        pshuffle = config['data'].get('parse_shuffle', False)
 
         for scene in scenes:
             input_exr_files = sorted(glob.glob(os.path.join(data_dir, scene, in_filename)))
@@ -247,19 +243,19 @@ class Denoiser(object):
                     end = len(input_exr_files)
                 print('[o] %s split: %d/%d permutations.' % (split, end - start, len(input_exr_files)))
 
-                # shuffle
                 _in_files = input_exr_files[start:end]
                 _gt_files = gt_exr_files[start:end]
-                _in_gt_paired = list(zip(_in_files, _gt_files))
-                random.shuffle(_in_gt_paired)
-                _in_files, gt_files = zip(*_in_gt_paired)
+                if pshuffle:
+                    _in_gt_paired = list(zip(_in_files, _gt_files))
+                    random.shuffle(_in_gt_paired)
+                    _in_files, gt_files = zip(*_in_gt_paired)
 
                 tfrecord_scene_split_dir = os.path.join(tfrecord_dir, scene, split)
                 if not os.path.exists(tfrecord_scene_split_dir):
                     os.makedirs(tfrecord_scene_split_dir)
                 tfrecord_filepath = os.path.join(tfrecord_scene_split_dir, 'data.tfrecords')
                 du.write_tfrecords(
-                    tfrecord_filepath, _in_files, _gt_files, patches_per_im, patch_size, self.fp16)
+                    tfrecord_filepath, _in_files, _gt_files, patches_per_im, patch_size, self.fp16, shuffle=pshuffle)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()

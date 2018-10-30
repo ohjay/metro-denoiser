@@ -2,7 +2,7 @@ op: sample_data
 
 data:
   data_dir: /media/owen/302371f7-852e-4f78-94e6-4d3ffebda36e/deep_learning_denoising/renderings
-  tfrecord_dir: /media/owen/302371f7-852e-4f78-94e6-4d3ffebda36e/renderings_tfrecords
+  tfrecord_dir: /media/owen/302371f7-852e-4f78-94e6-4d3ffebda36e/renderings_tfrecords_256
   scenes:
     - bathroom2
     - car2
@@ -16,13 +16,14 @@ data:
     train:      0.8
     validation: 0.1
     test:       0.1
-  in_spp: 128
+  in_spp: 256
   gt_spp: 8192
-  parse_start: 0
-  parse_step: 8
+  parse_start: 1
+  parse_step: 5
+  parse_shuffle: False
   patch_size: 65
   patches_per_im: 400
-  shuffle_buffer_size_limit: 80000
+  shuffle_buffer_size_limit: 50000
 
 train_params:
   batch_size: 5
@@ -48,7 +49,7 @@ layers:
     padding: same
     activation: relu
 
-  - type: batch_normalization
+  # - type: batch_normalization
 
   - type: conv2d
     num_outputs: 100
@@ -57,7 +58,7 @@ layers:
     padding: same
     activation: relu
 
-  - type: batch_normalization
+  # - type: batch_normalization
 
   - type: conv2d
     num_outputs: 100
@@ -66,7 +67,7 @@ layers:
     padding: same
     activation: relu
 
-  - type: batch_normalization
+  # - type: batch_normalization
 
   - type: conv2d
     num_outputs: 100
@@ -75,7 +76,7 @@ layers:
     padding: same
     activation: relu
 
-  - type: batch_normalization
+  # - type: batch_normalization
 
   - type: conv2d
     num_outputs: 100
@@ -84,7 +85,7 @@ layers:
     padding: same
     activation: relu
 
-  - type: batch_normalization
+  # - type: batch_normalization
 
   - type: conv2d
     num_outputs: 100
@@ -93,7 +94,7 @@ layers:
     padding: same
     activation: relu
 
-  - type: batch_normalization
+  # - type: batch_normalization
 
   - type: conv2d
     num_outputs: 100
@@ -102,7 +103,7 @@ layers:
     padding: same
     activation: relu
 
-  - type: batch_normalization
+  # - type: batch_normalization
 
   - type: conv2d
     num_outputs: 100
@@ -111,7 +112,7 @@ layers:
     padding: same
     activation: relu
 
-  - type: batch_normalization
+  # - type: batch_normalization
 
   # output
   - type: conv2d

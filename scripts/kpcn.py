@@ -63,6 +63,7 @@ class KPCN(object):
 
             # logging
             self.train_writer = tf.summary.FileWriter(os.path.join(summary_dir, 'train'))
+            self.validation_writer = tf.summary.FileWriter(os.path.join(summary_dir, 'validation'))
 
     def _filter(self, color, kernels):
 
