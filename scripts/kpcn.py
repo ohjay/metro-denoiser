@@ -57,9 +57,11 @@ class KPCN(object):
             self.loss_summary = tf.summary.scalar('loss', self.loss)
 
             # optimization
-            opt = tf.train.AdamOptimizer(learning_rate, epsilon=1e-4)  # https://stackoverflow.com/a/42077538
+            self.global_step = tf.Variable(0, trainable=False, name='global_step')
+            self.learning_rate = tf.train.exponential_decay(learning_rate, self.global_step, 100000, 0.96)
+            opt = tf.train.AdamOptimizer(self.learning_rate, epsilon=1e-4)  # eps: https://stackoverflow.com/a/42077538
             grads_and_vars = opt.compute_gradients(self.loss)
-            self.opt_op = opt.apply_gradients(grads_and_vars)
+            self.opt_op = opt.apply_gradients(grads_and_vars, global_step=self.global_step)
 
             # logging
             self.train_writer = tf.summary.FileWriter(os.path.join(summary_dir, 'train'))
