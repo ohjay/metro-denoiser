@@ -257,6 +257,27 @@ class Denoiser(object):
                 du.write_tfrecords(
                     tfrecord_filepath, _in_files, _gt_files, patches_per_im, patch_size, self.fp16, shuffle=pshuffle)
 
+    def visualize_data(self, config):
+        tf_buffers, init_ops = self.load_data(config)
+        tf_config = tf.ConfigProto(device_count={'GPU': 1}, allow_soft_placement=True)
+        with tf.Session(config=tf_config) as sess:
+            group = ''
+            while group.lower() not in {'diff_train', 'spec_train', 'diff_val', 'spec_val'}:
+                group = raw_input('Which data to visualize? {diff,spec}_{train,val} ')
+            sess.run(init_ops[group])
+
+            itr_remaining = 1
+            while itr_remaining > 0:
+                _in, _gt = sess.run([tf_buffers['color'], tf_buffers['gt_out']])
+                du.show_multiple(_in, _gt, block_on_viz=True)
+                itr_remaining -= 1
+                if itr_remaining == 0:
+                    try:
+                        itr_remaining = int(raw_input('Continue for X iterations: ').strip())
+                    except ValueError:
+                        print('[o] invalid response (must be integer), exiting...')
+                        break
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('config', type=str, help='config path')

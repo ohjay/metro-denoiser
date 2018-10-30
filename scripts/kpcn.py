@@ -2,6 +2,8 @@ import os
 from math import sqrt
 import tensorflow as tf
 
+from data_utils import get_run_dir
+
 class KPCN(object):
     """
     Kernel-predicting convolutional network,
@@ -64,8 +66,10 @@ class KPCN(object):
             self.opt_op = opt.apply_gradients(grads_and_vars, global_step=self.global_step)
 
             # logging
-            self.train_writer = tf.summary.FileWriter(os.path.join(summary_dir, 'train'))
-            self.validation_writer = tf.summary.FileWriter(os.path.join(summary_dir, 'validation'))
+            self.train_writer = tf.summary.FileWriter(
+                get_run_dir(os.path.join(summary_dir, 'train')))
+            self.validation_writer = tf.summary.FileWriter(
+                get_run_dir(os.path.join(summary_dir, 'validation')))
 
     def _filter(self, color, kernels):
 

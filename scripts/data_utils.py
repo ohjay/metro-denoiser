@@ -500,3 +500,13 @@ def show_multiple(*ims, **kwargs):
             plt.close()
         except:
             pass  # in case user closes window herself
+
+# ===============================================
+# FILESYSTEM I/O
+# ===============================================
+
+def get_run_dir(enclosing_dir):
+    run_id = 0
+    while os.path.isdir(os.path.join(enclosing_dir, 'run_%04d' % run_id)):
+        run_id += 1
+    return os.path.join(enclosing_dir, 'run_%04d' % run_id)
