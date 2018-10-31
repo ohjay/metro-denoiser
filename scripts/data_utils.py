@@ -405,7 +405,7 @@ def sample_patches(buffers, num_patches, patch_h, patch_w, debug_dir, input_id,
                 [buffers['R'], buffers['G'], buffers['B']], axis=-1)
         rh = patch_h // 2
         rw = patch_w // 2
-        rowlen = int(sqrt(num_samples))
+        rowlen = int(sqrt(num_samples)) + 1
         nrows = (num_samples - 1) // rowlen + 1  # works because I know num_samples > 0
         ncols = num_samples % rowlen if nrows == 1 else rowlen
         patches = np.zeros((nrows * patch_h, ncols * patch_w, 3))
