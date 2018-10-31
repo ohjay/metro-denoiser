@@ -416,10 +416,16 @@ def sample_patches(buffers, num_patches, patch_h, patch_w, debug_dir, input_id,
             patches[py:py+patch_h, px:px+patch_w] = source_im[y-rh:y+rh+1, x-rw:x+rw+1, :]
             patches_overlay[y-rh:y+rh+1, x-rw:x+rw+1, :] = source_im[y-rh:y+rh+1, x-rw:x+rw+1, :]
 
-        imsave(os.path.join(debug_dir, input_id + '_normal_var.jpg'),      n_var)
-        imsave(os.path.join(debug_dir, input_id + '_diffuse_var.jpg'),     d_var)
-        imsave(os.path.join(debug_dir, input_id + '_specular_var.jpg'),    s_var)
-        imsave(os.path.join(debug_dir, input_id + '_pdf.jpg'),             pdf)
+        qsize = (w // 2, h // 2)  # w, h ordering
+        _n_var = cv2.resize(n_var, qsize)
+        _d_var = cv2.resize(d_var, qsize)
+        _s_var = cv2.resize(s_var, qsize)
+        _pdf   = cv2.resize(pdf,   qsize)
+
+        imsave(os.path.join(debug_dir, input_id + '_normal_var.jpg'),      _n_var)
+        imsave(os.path.join(debug_dir, input_id + '_diffuse_var.jpg'),     _d_var)
+        imsave(os.path.join(debug_dir, input_id + '_specular_var.jpg'),    _s_var)
+        imsave(os.path.join(debug_dir, input_id + '_pdf.jpg'),             _pdf)
         imsave(os.path.join(debug_dir, input_id + '_patches.jpg'),         patches)
         imsave(os.path.join(debug_dir, input_id + '_patches_overlay.jpg'), patches_overlay)
 
