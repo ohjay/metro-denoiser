@@ -2,7 +2,7 @@ op: sample_data
 
 data:
   data_dir: /media/owen/302371f7-852e-4f78-94e6-4d3ffebda36e/deep_learning_denoising/renderings
-  tfrecord_dir: /media/owen/302371f7-852e-4f78-94e6-4d3ffebda36e/renderings_tfrecords_256
+  tfrecord_dir: /media/owen/302371f7-852e-4f78-94e6-4d3ffebda36e/renderings_tfrecords_diffuse
   scenes:
     - bathroom2
     - car2
@@ -22,7 +22,10 @@ data:
   parse_step: 5
   parse_shuffle: False
   patch_size: 65
-  patches_per_im: 400
+  patches_per_im: 10
+  save_debug_ims: True
+  diff_var_weight: 1.0
+  spec_var_weight: 1.0
   shuffle_buffer_size_limit: 50000
 
 train_params:
@@ -38,8 +41,12 @@ train_params:
   fp16: False
 
 kpcn:
-  incl_diff: True
-  incl_spec: False
+  diff:
+    include: False
+    restore_path: /home/owen/workspace/metro/scripts/checkpoints/diff_kpcn/var-59999
+  spec:
+    include: True
+    restore_path: x
 
 layers:
   - type: conv2d

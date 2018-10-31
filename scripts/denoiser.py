@@ -3,6 +3,7 @@ import sys
 import glob
 import yaml
 import time
+import shutil
 import random
 import argparse
 import numpy as np
@@ -24,11 +25,15 @@ class Denoiser(object):
         self.tf_dtype = tf.float16 if self.fp16 else tf.float32
 
     @staticmethod
-    def _training_loop(sess, kpcn, train_init_op, val_init_op, identifier,
-                       log_freq, save_freq, viz_freq, max_epochs, checkpoint_dir, block_on_viz):
-        # initialization
+    def _training_loop(sess, kpcn, train_init_op, val_init_op, identifier, log_freq,
+                       save_freq, viz_freq, max_epochs, checkpoint_dir, block_on_viz, restore_path=''):
+        # initialization/restore
         sess.run(tf.group(
             tf.global_variables_initializer(), tf.local_variables_initializer()))
+        if os.path.isfile(restore_path + '.index'):
+            kpcn.restore(sess, restore_path)
+
+        start_time = time.time()
 
         i = 0
         min_avg_train_loss = float('inf')
@@ -74,13 +79,15 @@ class Denoiser(object):
                     min_avg_val_loss = avg_loss
                 loss_summary = sess.run(kpcn.loss_summary, {kpcn.loss: avg_loss})
                 kpcn.validation_writer.add_summary(loss_summary, i)
+                time_elapsed = time.time() - start_time
                 print('[o][%s] Validation loss: %.5f' % (identifier, avg_loss))
-                print('[o][%s] Epoch %d complete.' % (identifier, epoch + 1))
+                print('[o][%s] Epoch %d complete. Time elapsed: %.2fs' % (identifier, epoch + 1, time_elapsed))
         except KeyboardInterrupt:
+            print('')
             print('[KeyboardInterrupt] summary')
             print('---------------------------')
-            print('[o] min avg train loss: %.4f' % min_avg_train_loss)
-            print('[o] min_avg_val_loss:   %.4f' % min_avg_val_loss)
+            print('[o] min avg train loss: %.5f' % min_avg_train_loss)
+            print('[o] min_avg_val_loss:   %.5f' % min_avg_val_loss)
             print('[o] total steps:        %d' % i)
             print('---------------------------')
             print('exiting...')
@@ -115,23 +122,25 @@ class Denoiser(object):
             device_count={'GPU': 1}, allow_soft_placement=True)
         with tf.Session(config=tf_config) as sess:
             # training loops
-            if config['kpcn']['incl_diff']:
+            if config['kpcn']['diff']['include']:
+                diff_checkpoint_dir = os.path.join(checkpoint_dir, 'diff')
+                diff_restore_path   = config['kpcn']['diff'].get('restore_path', '')
+
                 self.diff_kpcn = KPCN(
                     tf_buffers, patch_size, patch_size, layers_config,
                     is_training, learning_rate, summary_dir, scope='diffuse')
-
-                diff_checkpoint_dir = os.path.join(checkpoint_dir, 'diff_kpcn')
                 self._training_loop(sess, self.diff_kpcn, init_ops['diff_train'], init_ops['diff_val'], 'diff',
-                    log_freq, save_freq, viz_freq, max_epochs, diff_checkpoint_dir, block_on_viz)
+                    log_freq, save_freq, viz_freq, max_epochs, diff_checkpoint_dir, block_on_viz, diff_restore_path)
 
-            if config['kpcn']['incl_spec']:
+            if config['kpcn']['spec']['include']:
+                spec_checkpoint_dir = os.path.join(checkpoint_dir, 'spec')
+                spec_restore_path   = config['kpcn']['spec'].get('restore_path', '')
+
                 self.spec_kpcn = KPCN(
                     tf_buffers, patch_size, patch_size, layers_config,
                     is_training, learning_rate, summary_dir, scope='specular')
-
-                spec_checkpoint_dir = os.path.join(checkpoint_dir, 'spec_kpcn')
                 self._training_loop(sess, self.spec_kpcn, init_ops['spec_train'], init_ops['spec_val'], 'spec',
-                    log_freq, save_freq, viz_freq, max_epochs, spec_checkpoint_dir, block_on_viz)
+                    log_freq, save_freq, viz_freq, max_epochs, spec_checkpoint_dir, block_on_viz, spec_restore_path)
 
     def load_data(self, config, shuffle=True):
         batch_size = config['train_params'].get('batch_size', 5)
@@ -210,23 +219,21 @@ class Denoiser(object):
         return tf_buffers, init_ops
 
     def sample_data(self, config):
-        """Write data to TFRecords files for later use."""
-        data_dir = config['data']['data_dir']
-        scenes = config['data']['scenes']
-        splits = config['data']['splits']
-        in_filename = '*-%sspp.exr' % str(config['data']['in_spp']).zfill(5)
-        gt_filename = '*-%sspp.exr' % str(config['data']['gt_spp']).zfill(5)
-
-        tfrecord_dir = config['data']['tfrecord_dir']
-        if not os.path.exists(tfrecord_dir):
-            os.makedirs(tfrecord_dir)
-
-        patch_size = config['data'].get('patch_size', 65)
+        """Write data to TFRecord files for later use."""
+        data_dir       = config['data']['data_dir']
+        scenes         = config['data']['scenes']
+        splits         = config['data']['splits']
+        in_filename    = '*-%sspp.exr' % str(config['data']['in_spp']).zfill(5)
+        gt_filename    = '*-%sspp.exr' % str(config['data']['gt_spp']).zfill(5)
+        tfrecord_dir   = config['data']['tfrecord_dir']
+        pstart         = config['data'].get('parse_start', 0)
+        pstep          = config['data'].get('parse_step', 1)
+        pshuffle       = config['data'].get('parse_shuffle', False)
+        patch_size     = config['data'].get('patch_size', 65)
         patches_per_im = config['data'].get('patches_per_im', 400)
-
-        pstart = config['data'].get('parse_start', 0)
-        pstep = config['data'].get('parse_step', 1)
-        pshuffle = config['data'].get('parse_shuffle', False)
+        save_debug_ims = config['data'].get('save_debug_ims', False)
+        diff_weight    = config['data'].get('diff_var_weight', 1.0)
+        spec_weight    = config['data'].get('spec_var_weight', 1.0)
 
         for scene in scenes:
             input_exr_files = sorted(glob.glob(os.path.join(data_dir, scene, in_filename)))
@@ -235,6 +242,12 @@ class Denoiser(object):
             input_exr_files = [f for i, f in enumerate(input_exr_files[pstart:]) if i % pstep == 0]
             gt_exr_files    = [f for i, f in enumerate(gt_exr_files[pstart:])    if i % pstep == 0]
             print('[o] Using %d permutations for scene %s.' % (len(input_exr_files), scene))
+
+            # export dataset generation parameters
+            tfrecord_scene_dir = os.path.join(tfrecord_dir, scene)
+            if not os.path.exists(tfrecord_scene_dir):
+                os.makedirs(tfrecord_scene_dir)
+            shutil.copyfile(args.config, os.path.join(tfrecord_scene_dir, 'datagen.yaml'))
 
             end = 0
             for split in ['train', 'validation', 'test']:  # train gets the first 0.X, val gets the next 0.X, ...
@@ -251,14 +264,17 @@ class Denoiser(object):
                     random.shuffle(_in_gt_paired)
                     _in_files, gt_files = zip(*_in_gt_paired)
 
-                tfrecord_scene_split_dir = os.path.join(tfrecord_dir, scene, split)
+                tfrecord_scene_split_dir = os.path.join(tfrecord_scene_dir, split)
                 if not os.path.exists(tfrecord_scene_split_dir):
                     os.makedirs(tfrecord_scene_split_dir)
                 tfrecord_filepath = os.path.join(tfrecord_scene_split_dir, 'data.tfrecords')
+                debug_dir = tfrecord_scene_split_dir if save_debug_ims else ''
                 du.write_tfrecords(
-                    tfrecord_filepath, _in_files, _gt_files, patches_per_im, patch_size, self.fp16, shuffle=pshuffle)
+                    tfrecord_filepath, _in_files, _gt_files, patches_per_im, patch_size, self.fp16,
+                    shuffle=pshuffle, debug_dir=debug_dir, diff_weight=diff_weight, spec_weight=spec_weight)
 
     def visualize_data(self, config):
+        """Visualize sampled data stored in the TFRecord files."""
         tf_buffers, init_ops = self.load_data(config, shuffle=False)
         tf_config = tf.ConfigProto(device_count={'GPU': 1}, allow_soft_placement=True)
         with tf.Session(config=tf_config) as sess:

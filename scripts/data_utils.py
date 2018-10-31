@@ -1,9 +1,12 @@
 import os
+import cv2
 import Imath
 import random
 import OpenEXR
 import numpy as np
+from math import sqrt
 import tensorflow as tf
+from scipy.misc import imsave
 import matplotlib.pyplot as plt
 from scipy.ndimage.filters import gaussian_filter
 
@@ -157,12 +160,16 @@ def _bytes_feature(value):
     return tf.train.Feature(bytes_list=tf.train.BytesList(value=[value]))
 
 def write_tfrecords(tfrecord_filepath, input_exr_files, gt_exr_files,
-                    patches_per_im, patch_size, fp16, shuffle=False):
+                    patches_per_im, patch_size, fp16, shuffle=False,
+                    debug_dir='', diff_weight=1.0, spec_weight=1.0):
     """Export PATCHES_PER_IM examples for each EXR file.
     Accepts two lists of EXR filepaths with corresponding orderings.
 
     Handles patch sampling but not preprocessing.
     """
+    if debug_dir and not os.path.exists(debug_dir):
+        os.makedirs(debug_dir)
+
     with tf.python_io.TFRecordWriter(tfrecord_filepath) as writer:
         all_examples = []
         all_examples_size_limit = patches_per_im * 50  # essentially, shuffle buffer lim = 50 ims
@@ -174,12 +181,20 @@ def write_tfrecords(tfrecord_filepath, input_exr_files, gt_exr_files,
             print('[+] Wrote %d examples to TFRecord file `%s`.' % (len(all_examples), tfrecord_filepath))
 
         for input_filepath, gt_filepath in zip(input_exr_files, gt_exr_files):
+            # for filename str printing
+            input_dirname = os.path.dirname(input_filepath)
+            input_basename = os.path.basename(input_filepath)
+            input_id = os.path.join(os.path.basename(input_dirname), input_basename)
+
             input_buffers = read_exr(input_filepath, fp16=fp16)
             input_buffers = stack_channels(input_buffers)
             try:
-                patch_indices = sample_patches(input_buffers, patches_per_im, patch_size, patch_size)
-            except ValueError:
-                print('[-] Invalid value during %s sampling.' % input_filepath)
+                _input_id = input_basename[:input_basename.rfind('.')]
+                patch_indices = sample_patches(
+                    input_buffers, patches_per_im, patch_size, patch_size,
+                    debug_dir, _input_id, diff_weight=diff_weight, spec_weight=spec_weight)
+            except ValueError as e:
+                print('[-] Invalid value during %s sampling. (%s)' % (input_id, str(e)))
                 continue
 
             gt_buffers = read_exr(gt_filepath, fp16=fp16)
@@ -213,9 +228,6 @@ def write_tfrecords(tfrecord_filepath, input_exr_files, gt_exr_files,
                     all_examples.append(example)
                 else:
                     writer.write(example.SerializeToString())
-            input_dirname = os.path.dirname(input_filepath)
-            input_basename = os.path.basename(input_filepath)
-            input_id = os.path.join(os.path.basename(input_dirname), input_basename)
             print('[o] Collected %d examples for %s.' % (len(patch_indices), input_id))
 
             if shuffle and len(all_examples) >= all_examples_size_limit:
@@ -261,13 +273,11 @@ def make_decode(is_diffuse, tf_dtype, buffer_h, buffer_w, eps):
         if is_diffuse:
             p['diffuse'] = tf_preprocess_diffuse(p['diffuse'], p['albedo'], eps)
             p['gt_diffuse'] = tf_preprocess_diffuse(p['gt_diffuse'], p['gt_albedo'], eps)
-            p['diffuseVariance'] = tf_preprocess_diffuse_variance(
-                p['diffuseVariance'], p['albedo'], eps)
+            p['diffuseVariance'] = tf_preprocess_diffuse_variance(p['diffuseVariance'], p['albedo'], eps)
         else:
             p['specular'] = tf_preprocess_specular(p['specular'])
             p['gt_specular'] = tf_preprocess_specular(p['gt_specular'])
-            p['specularVariance'] = tf_preprocess_specular_variance(
-                p['specular'], p['specularVariance'])
+            p['specularVariance'] = tf_preprocess_specular_variance(p['specular'], p['specularVariance'])
         p['depth'], p['depthVariance'] = tf_preprocess_depth(p['depth'], p['depthVariance'])
 
         variance_features = tf.concat([
@@ -291,10 +301,44 @@ def make_decode(is_diffuse, tf_dtype, buffer_h, buffer_w, eps):
 # SAMPLING
 # ===============================================
 
+def to_uint8(im):
+    return (np.clip(im, 0, 1) * 255).astype(np.uint8)
+
+def approximately_black(im, mean_threshold=1, std_threshold=1, count_threshold=3):
+    """Return True if image is approximately black."""
+    im = to_uint8(im)
+    return np.mean(im) <= mean_threshold \
+        and np.std(im) <= std_threshold \
+        and np.count_nonzero(im) <= count_threshold
+
+def compute_rel_luminance(im):
+    """Compute relative luminance from RGB image as per goo.gl/YddtR4."""
+    return 0.2126 * im[:, :, 0] + 0.7152 * im[:, :, 1] + 0.0722 * im[:, :, 2]
+
+def compute_variance(im, window_h, window_w):
+    """Compute variance image.
+    Source: https://stackoverflow.com/a/36266187.
+    """
+    kernel_size     = (window_h, window_w)
+    window_mean     = cv2.boxFilter(im,      -1, kernel_size, borderType=cv2.BORDER_REFLECT)
+    window_sqr_mean = cv2.boxFilter(im ** 2, -1, kernel_size, borderType=cv2.BORDER_REFLECT)
+    return window_sqr_mean - window_mean ** 2
+
+def compute_processed_variance(im, window_h, window_w):
+    """Compute smoothed, single-channel variance image."""
+    variance = compute_variance(im, window_h, window_w)
+    variance = compute_rel_luminance(variance)
+    variance = gaussian_filter_wrapper(variance, sigma=1.0)
+    return variance
+
 def invalid_complain(data):
     """Raise an error if there are invalid values in the given NumPy array."""
-    if np.count_nonzero(np.isnan(data)) + np.count_nonzero(np.isinf(data)) > 0:
-        raise ValueError('invalid value')
+    if np.count_nonzero(data) == 0:
+        raise ValueError('data all zero')
+    if np.count_nonzero(np.isnan(data)) > 0:
+        raise ValueError('invalid value: NaN')
+    if np.count_nonzero(np.isinf(data)) > 0:
+        raise ValueError('invalid value: inf')
 
 def gaussian_filter_wrapper(signal, sigma=1.0):
     """Perform Gaussian blurring, allowing for fp16 dtype."""
@@ -306,42 +350,80 @@ def gaussian_filter_wrapper(signal, sigma=1.0):
         signal = signal.astype(np.float16)
     return signal
 
-def sample_patches(buffers, num_patches, patch_h, patch_w):
+def sample_patches(buffers, num_patches, patch_h, patch_w, debug_dir, input_id,
+                   diff_weight=1.0, spec_weight=1.0, normal_weight=0.5):
     """
     Sample NUM_PATCHES (y, x) indices for (PATCH_H, PATCH_W)-sized patches from the given frame.
     As per Bako et al., we will find candidate patches and prune based on color/normal variance.
     Operates in EXR buffer space (as opposed to tensor space).
+
+    We will sample min(NUM_PATCHES, number of nonzero patches), rather than NUM_PATCHES exactly.
     """
-    h, w = buffers['colorVariance'].shape[:2]
+    h, w = buffers['normal'].shape[:2]
     y_range = (patch_h // 2, h - patch_h // 2)  # [)
     x_range = (patch_w // 2, w - patch_w // 2)  # [)
 
-    # Define multivariate "PDF"
-    pdf = np.squeeze(
-        buffers['colorVariance'] + buffers['normalVariance'])  # (h, w)
-    pdf = gaussian_filter_wrapper(pdf)  # blur as per Gharbi et al.
+    # 2D PDF ---------------------------------------------------------------
+
+    n_var = compute_processed_variance(buffers['normal'], patch_h, patch_w)
+    d_var = compute_processed_variance(buffers['diffuse'], patch_h, patch_w)
+    s_var = compute_processed_variance(buffers['specular'], patch_h, patch_w)
+
+    pdf = normal_weight * n_var + diff_weight * d_var + spec_weight * s_var
+    if diff_weight > 0:
+        pdf *= (d_var > 0)  # we don't want zero-variance patches
+    if spec_weight > 0:
+        pdf *= (s_var > 0)
+
+    # Set out-of-bounds regions to zero
+    _template = np.zeros_like(pdf)
+    _template[y_range[0]:y_range[1], x_range[0]:x_range[1]] \
+        = pdf[y_range[0]:y_range[1], x_range[0]:x_range[1]]
+    pdf = _template
+
     invalid_complain(pdf)
-    pdf -= np.min(pdf)
-    if np.sum(pdf) == 0:
-        pdf += 1.0 / (h * w)
-    pdf /= np.sum(pdf)  # now [0, 1] and sums to 1
-    pdf += 0.1  # so we can multiplicatively tamper with "PDF" later
+    pdf /= np.sum(pdf)  # normalize to [0, 1], sum to 1
 
-    patch_indices = []
-    while len(patch_indices) < num_patches:
-        # Uniformly sample candidate indices
-        y = np.random.randint(*y_range)
-        x = np.random.randint(*x_range)
+    # SAMPLING -------------------------------------------------------------
 
-        # Reject according to "PDF," adjust "PDF" accordingly
-        if pdf[y, x] > np.random.random():
-            patch_indices.append([y, x])
-            pdf[y, x] *= 0.2
+    num_samples = min(num_patches, np.count_nonzero(pdf))
+    samples = np.random.choice(pdf.size, num_samples, replace=False, p=pdf.flatten())
+    patch_indices = np.unravel_index(samples, pdf.shape)
+    patch_indices = np.stack(patch_indices, axis=1)  # (num_samples, 2)
+    print('[o] Sampled %d patch indices.' % num_samples)
+
+    # DEBUG ----------------------------------------------------------------
+
+    if debug_dir:
+        # tile patches into debug image
+        if diff_weight > 0 and spec_weight == 0:
+            source_im = buffers['diffuse']
+        elif diff_weight == 0 and spec_weight > 0:
+            source_im = buffers['specular']
         else:
-            pdf[y, x] *= 2.0
+            source_im = np.concatenate(
+                [buffers['R'], buffers['G'], buffers['B']], axis=-1)
+        rh = patch_h // 2
+        rw = patch_w // 2
+        rowlen = int(sqrt(num_samples))
+        nrows = (num_samples - 1) // rowlen + 1  # works because I know num_samples > 0
+        ncols = num_samples % rowlen if nrows == 1 else rowlen
+        patches = np.zeros((nrows * patch_h, ncols * patch_w, 3))
+        patches_overlay = source_im * 0.1  # credit to Bako et al. for this visualization idea
+        for i, (y, x) in enumerate(patch_indices):
+            py = (i // rowlen) * patch_h
+            px = (i % rowlen)  * patch_w
+            patches[py:py+patch_h, px:px+patch_w] = source_im[y-rh:y+rh+1, x-rw:x+rw+1, :]
+            patches_overlay[y-rh:y+rh+1, x-rw:x+rw+1, :] = source_im[y-rh:y+rh+1, x-rw:x+rw+1, :]
 
-    print('[o] Sampled %d patch indices.' % num_patches)
-    return np.array(patch_indices)  # (num_patches, 2)
+        imsave(os.path.join(debug_dir, input_id + '_normal_var.jpg'),      n_var)
+        imsave(os.path.join(debug_dir, input_id + '_diffuse_var.jpg'),     d_var)
+        imsave(os.path.join(debug_dir, input_id + '_specular_var.jpg'),    s_var)
+        imsave(os.path.join(debug_dir, input_id + '_pdf.jpg'),             pdf)
+        imsave(os.path.join(debug_dir, input_id + '_patches.jpg'),         patches)
+        imsave(os.path.join(debug_dir, input_id + '_patches_overlay.jpg'), patches_overlay)
+
+    return patch_indices
 
 # ===============================================
 # PRE/POST-PROCESSING (NUMPY)
@@ -481,15 +563,22 @@ def show_multiple(*ims, **kwargs):
     fig, ax = plt.subplots(nrows, ncols, squeeze=False)
     for j, im in enumerate(ims):
         _im = im
+        _nd = len(_im.shape)
+        cmap = None
         if _im.dtype == np.float16:
             _im = _im.astype(np.float32)
-        if len(_im.shape) == 4:
-            for k in range(min(len(_im.shape), batch_max)):
+        if _im.shape[-1] == 1 or _nd == 2:
+            cmap = plt.gray()
+        if _im.shape[-1] == 1:
+            # single-channel (grayscale) image
+            _im = np.squeeze(_im, axis=-1)
+        if _nd == 4:
+            for k in range(min(_nd, batch_max)):
                 row = base_nrows * k + j // row_max
-                ax[row, j % row_max].imshow(_im[k])
+                ax[row, j % row_max].imshow(_im[k], cmap=cmap)
                 ax[row, j % row_max].set_axis_off()
         else:
-            ax[j // row_max, j % row_max].imshow(_im)
+            ax[j // row_max, j % row_max].imshow(_im, cmap=cmap)
             ax[j // row_max, j % row_max].set_axis_off()
 
     if block_on_viz:

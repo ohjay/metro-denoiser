@@ -13,7 +13,8 @@ class KPCN(object):
     """
     curr_index = -1
 
-    def __init__(self, tf_buffers, buffer_h, buffer_w, layers_config, is_training, learning_rate, summary_dir, scope=None):
+    def __init__(self, tf_buffers, buffer_h, buffer_w, layers_config,
+                 is_training, learning_rate, summary_dir, scope=None):
 
         self.is_training = is_training
 
@@ -122,7 +123,7 @@ class KPCN(object):
         saver.save(sess, base_filepath, global_step=iteration, write_meta_graph=write_meta_graph)
         print('[+] Saved current parameters to %s-%d.' % (base_filepath, iteration))
 
-    def restore(self, sess, iteration, checkpoint_dir='checkpoints'):
+    def restore(self, sess, restore_path):
         saver = tf.train.Saver(tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope=self.scope))
-        saver.restore(sess, os.path.join(checkpoint_dir, 'var-%d' % iteration))
-        print('[+] `%s` KPCN restored to iteration %d (checkpoint_dir=%s).' % (self.scope, iteration, checkpoint_dir))
+        saver.restore(sess, restore_path)
+        print('[+] `%s` KPCN restored from `%s`.' % (self.scope, restore_path))
