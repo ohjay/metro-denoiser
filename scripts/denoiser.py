@@ -338,11 +338,11 @@ class Denoiser(object):
 
         # define networks
         tf_placeholders = {
-            'color':        tf.placeholder(self.tf_dtype, shape=(None, buffer_h, buffer_w, 3))
-            'grad_x':       tf.placeholder(self.tf_dtype, shape=(None, buffer_h, buffer_w, 10))
-            'grad_y':       tf.placeholder(self.tf_dtype, shape=(None, buffer_h, buffer_w, 10))
-            'var_color':    tf.placeholder(self.tf_dtype, shape=(None, buffer_h, buffer_w, 1))
-            'var_features': tf.placeholder(self.tf_dtype, shape=(None, buffer_h, buffer_w, 3))
+            'color':        tf.placeholder(self.tf_dtype, shape=(None, buffer_h, buffer_w, 3)),
+            'grad_x':       tf.placeholder(self.tf_dtype, shape=(None, buffer_h, buffer_w, 10)),
+            'grad_y':       tf.placeholder(self.tf_dtype, shape=(None, buffer_h, buffer_w, 10)),
+            'var_color':    tf.placeholder(self.tf_dtype, shape=(None, buffer_h, buffer_w, 1)),
+            'var_features': tf.placeholder(self.tf_dtype, shape=(None, buffer_h, buffer_w, 3)),
         }
         self.diff_kpcn = KPCN(
             tf_placeholders, patch_size, patch_size, layers_config,
