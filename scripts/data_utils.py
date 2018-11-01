@@ -273,6 +273,15 @@ def make_decode(is_diffuse, tf_dtype, buffer_h, buffer_w, eps, clip_ims):
             p[name] = tf.decode_raw(features[name], tf_dtype)
             p[name] = tf.reshape(p[name], [buffer_h, buffer_w, N_CHANNELS[name]])
 
+        # clipping
+        if clip_ims:
+            if is_diffuse:
+                p['diffuse']     = tf.clip_by_value(p['diffuse'], 0.0, 1.0)
+                p['gt_diffuse']  = tf.clip_by_value(p['gt_diffuse'], 0.0, 1.0)
+            else:
+                p['specular']    = tf.clip_by_value(p['specular'], 0.0, 1.0)
+                p['gt_specular'] = tf.clip_by_value(p['gt_specular'], 0.0, 1.0)
+
         # preprocess
         if is_diffuse:
             p['diffuse'] = tf_preprocess_diffuse(p['diffuse'], p['albedo'], eps)
@@ -283,15 +292,6 @@ def make_decode(is_diffuse, tf_dtype, buffer_h, buffer_w, eps, clip_ims):
             p['gt_specular'] = tf_preprocess_specular(p['gt_specular'])
             p['specularVariance'] = tf_preprocess_specular_variance(p['specular'], p['specularVariance'])
         p['depth'], p['depthVariance'] = tf_preprocess_depth(p['depth'], p['depthVariance'])
-
-        # clipping
-        if clip_ims:
-            if is_diffuse:
-                p['diffuse']     = tf.clip_by_value(p['diffuse'], 0.0, 1.0)
-                p['gt_diffuse']  = tf.clip_by_value(p['gt_diffuse'], 0.0, 1.0)
-            else:
-                p['specular']    = tf.clip_by_value(p['specular'], 0.0, 1.0)
-                p['gt_specular'] = tf.clip_by_value(p['gt_specular'], 0.0, 1.0)
 
         variance_features = tf.concat([
             p['normalVariance'],
