@@ -8,6 +8,7 @@ import random
 import argparse
 import numpy as np
 import tensorflow as tf
+from scipy.misc import imsave
 
 from kpcn import KPCN
 import data_utils as du
@@ -28,7 +29,7 @@ class Denoiser(object):
     def _training_loop(sess, kpcn, train_init_op, val_init_op, identifier, log_freq,
                        save_freq, viz_freq, max_epochs, checkpoint_dir, block_on_viz,
                        restore_path='', reset_lr=True):
-        # initialization/restore
+        # initialize/restore
         sess.run(tf.group(
             tf.global_variables_initializer(), tf.local_variables_initializer()))
         if os.path.isfile(restore_path + '.index'):
@@ -127,7 +128,7 @@ class Denoiser(object):
             device_count={'GPU': 1}, allow_soft_placement=True)
         with tf.Session(config=tf_config) as sess:
             # training loops
-            if config['kpcn']['diff']['include']:
+            if config['kpcn']['diff']['train_include']:
                 diff_checkpoint_dir = os.path.join(checkpoint_dir, 'diff')
                 diff_restore_path   = config['kpcn']['diff'].get('restore_path', '')
 
@@ -137,7 +138,7 @@ class Denoiser(object):
                 self._training_loop(sess, self.diff_kpcn, init_ops['diff_train'], init_ops['diff_val'], 'diff',
                     log_freq, save_freq, viz_freq, max_epochs, diff_checkpoint_dir, block_on_viz, diff_restore_path, reset_lr)
 
-            if config['kpcn']['spec']['include']:
+            if config['kpcn']['spec']['train_include']:
                 spec_checkpoint_dir = os.path.join(checkpoint_dir, 'spec')
                 spec_restore_path   = config['kpcn']['spec'].get('restore_path', '')
 
@@ -302,6 +303,107 @@ class Denoiser(object):
                     except ValueError:
                         print('[o] invalid response (must be integer), exiting...')
                         break
+
+    def denoise(self, config):
+        """Run full pipeline to denoise an image."""
+        patch_size    = config['data'].get('patch_size', 65)
+        layers_config = config['layers']
+        is_training   = config['op'] == 'train'
+        learning_rate = config['train_params']['learning_rate']
+        summary_dir   = config['train_params'].get('summary_dir', 'summaries')
+
+        im_path = config['evaluate']['im_path']
+        if im_path.endswith('exr'):
+            input_buffers = read_exr(input_filepath, fp16=self.fp16)
+            input_buffers = stack_channels(input_buffers)
+        else:
+            dot_idx      = im_path.rfind('.')
+            filetype_str = ' ' + im_path[dot_idx:] if dot_idx != -1 else ''
+            raise TypeError('[-] Filetype%s not supported yet.' % filetype_str)
+
+        h, w = input_buffers['diffuse'].shape[:2]
+
+        # clip
+        if config['data']['clip_ims']:
+            input_buffers['diffuse'] = np.clip(input_buffers['diffuse'], 0.0, 1.0)
+            input_buffers['specular'] = np.clip(input_buffers['specular'], 0.0, 1.0)
+
+        # preprocess
+        du.preprocess_diffuse(input_buffers, self.eps)
+        du.preprocess_specular(input_buffers)
+        du.preprocess_depth(input_buffers)
+
+        # make network inputs
+        diff_in, spec_in = du.make_network_inputs(input_buffers)
+
+        # define networks
+        tf_placeholders = {
+            'color':        tf.placeholder(self.tf_dtype, shape=(None, buffer_h, buffer_w, 3))
+            'grad_x':       tf.placeholder(self.tf_dtype, shape=(None, buffer_h, buffer_w, 10))
+            'grad_y':       tf.placeholder(self.tf_dtype, shape=(None, buffer_h, buffer_w, 10))
+            'var_color':    tf.placeholder(self.tf_dtype, shape=(None, buffer_h, buffer_w, 1))
+            'var_features': tf.placeholder(self.tf_dtype, shape=(None, buffer_h, buffer_w, 3))
+        }
+        self.diff_kpcn = KPCN(
+            tf_placeholders, patch_size, patch_size, layers_config,
+            is_training, learning_rate, summary_dir, scope='diffuse')
+        self.spec_kpcn = KPCN(
+            tf_placeholders, patch_size, patch_size, layers_config,
+            is_training, learning_rate, summary_dir, scope='specular')
+
+        ks = self.diff_kpcn.kernel_size
+
+        # split image into l/r sub-images (with overlap)
+        # because my GPU doesn't have enough memory to deal with the whole image at once
+        l_diff_in = {c: data[:, :, :w//2+ks, :] for c, data in diff_in.items()}
+        r_diff_in = {c: data[:, :, w//2-ks:, :] for c, data in diff_in.items()}
+        l_spec_in = {c: data[:, :, :w//2+ks, :] for c, data in spec_in.items()}
+        r_spec_in = {c: data[:, :, w//2-ks:, :] for c, data in spec_in.items()}
+
+        tf_config = tf.ConfigProto(
+            device_count={'GPU': 1}, allow_soft_placement=True)
+        with tf.Session(config=tf_config) as sess:
+            diff_restore_path = config['kpcn']['diff'].get('restore_path', '')
+            spec_restore_path = config['kpcn']['spec'].get('restore_path', '')
+
+            # initialize/restore
+            sess.run(tf.group(
+                tf.global_variables_initializer(), tf.local_variables_initializer()))
+            if os.path.isfile(diff_restore_path + '.index'):
+                self.diff_kpcn.restore(sess, diff_restore_path)
+            if os.path.isfile(spec_restore_path + '.index'):
+                self.spec_kpcn.restore(sess, spec_restore_path)
+
+            l_diff_out = self.diff_kpcn.run(self, sess, l_diff_in)
+            r_diff_out = self.diff_kpcn.run(self, sess, r_diff_in)
+            l_spec_out = self.spec_kpcn.run(self, sess, l_spec_in)
+            r_spec_out = self.spec_kpcn.run(self, sess, r_spec_in)
+
+        # composite
+        diff_out = np.zeros((h, w, 3))
+        diff_out[:, :w//2, :] = l_diff_out[0, :, :w//2, :]
+        diff_out[:, w//2:, :] = r_diff_out[0, :, w//2:, :]
+        spec_out = np.zeros((h, w, 3))
+        spec_out[:, :w//2, :] = l_spec_out[0, :, :w//2, :]
+        spec_out[:, w//2:, :] = r_spec_out[0, :, w//2:, :]
+
+        # postprocess
+        diff_out = du.postprocess_diffuse(diff_out, input_buffers['albedo'], self.eps)
+        spec_out = du.postprocess_specular(spec_out)
+
+        # combine
+        out = diff_out + spec_out
+        out = du.clip_and_gamma_correct(out)
+
+        _in = np.concatenate(
+            [input_buffers['R'], input_buffers['G'], input_buffers['B']], axis=-1)
+        _in = du.clip_and_gamma_correct(_in)
+
+        # write and show
+        out_path = os.path.join(out_dir, 'out_' + os.path.basename(im_path))
+        imsave(out_path, out)
+        print('[+] Wrote result to %s.' % out_path)
+        du.show_multiple(_in, out, row_max=2, block_on_viz=True)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()

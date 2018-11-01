@@ -1,5 +1,6 @@
 import os
 import cv2
+import time
 import Imath
 import random
 import OpenEXR
@@ -181,6 +182,7 @@ def write_tfrecords(tfrecord_filepath, input_exr_files, gt_exr_files,
             print('[+] Wrote %d examples to TFRecord file `%s`.' % (len(all_examples), tfrecord_filepath))
 
         i = 0
+        start_time = time.time()
         for input_filepath, gt_filepath in zip(input_exr_files, gt_exr_files):
             # for filename str printing
             input_dirname = os.path.dirname(input_filepath)
@@ -230,7 +232,10 @@ def write_tfrecords(tfrecord_filepath, input_exr_files, gt_exr_files,
                     all_examples.append(example)
                 else:
                     writer.write(example.SerializeToString())
-            print('[o] Collected %d examples for %s.' % (len(patch_indices), input_id))
+            print('[o] Collected %d examples for %s (%d/%d).'
+                % (len(patch_indices), input_id, i + 1, len(input_exr_files)))
+            if (i + 1) % 10 == 0:
+                print('--- TIME ELAPSED: %s' % format_seconds(time.time() - start_time))
 
             if shuffle and len(all_examples) >= all_examples_size_limit:
                 shuffle_and_write()
@@ -469,26 +474,24 @@ def compute_buffer_gradients(buffers):
     Return horizontal and vertical gradients for
     diffuse buffer (3 channels), specular buffer (3 channels),
     normal buffer (3 channels), albedo buffer (3 channels), and depth buffer (1 channel).
+
+    Note: cannot use `np.gradient` because it uses central differences, whereas
+    `tf.image.image_gradients`, this function's counterpart, uses forward differences.
     """
-    def _three_channel_grad(_buffer):
-        grad_ry, grad_rx = np.gradient(_buffer[:, :, 0])
-        grad_gy, grad_gx = np.gradient(_buffer[:, :, 1])
-        grad_by, grad_bx = np.gradient(_buffer[:, :, 2])
+    def _image_gradients(_buffer):
+        grad_y = np.zeros_like(_buffer)
+        grad_y[:-1, :, :] = _buffer[1:, :, :] - _buffer[:-1, :, :]
 
-        grad_y = np.stack([grad_ry, grad_gy, grad_by], axis=-1)
-        grad_x = np.stack([grad_rx, grad_gx, grad_bx], axis=-1)
+        grad_x = np.zeros_like(_buffer)
+        grad_x[:, :-1, :] = _buffer[:, 1:, :] - _buffer[:, :-1, :]
+
         return grad_y, grad_x
 
-    def _one_channel_grad(_buffer):
-        grad_y, grad_x = np.gradient(_buffer[:, :, 0])
-        grad_y, grad_x = np.expand_dims(grad_y, -1), np.expand_dims(grad_x, -1)
-        return grad_y, grad_x
-
-    diffuse_grad_y,  diffuse_grad_x  = _three_channel_grad(buffers['diffuse'])
-    specular_grad_y, specular_grad_x = _three_channel_grad(buffers['specular'])
-    normal_grad_y,   normal_grad_x   = _three_channel_grad(buffers['normal'])
-    albedo_grad_y,   albedo_grad_x   = _three_channel_grad(buffers['albedo'])
-    depth_grad_y,    depth_grad_x    = _one_channel_grad(buffers['depth'])
+    diffuse_grad_y,  diffuse_grad_x  = _image_gradients(buffers['diffuse'])
+    specular_grad_y, specular_grad_x = _image_gradients(buffers['specular'])
+    normal_grad_y,   normal_grad_x   = _image_gradients(buffers['normal'])
+    albedo_grad_y,   albedo_grad_x   = _image_gradients(buffers['albedo'])
+    depth_grad_y,    depth_grad_x    = _image_gradients(buffers['depth'])
 
     grad_y = {
         'diffuse': diffuse_grad_y,
@@ -505,6 +508,45 @@ def compute_buffer_gradients(buffers):
         'depth': depth_grad_x,
     }
     return grad_y, grad_x
+
+def make_network_inputs(buffers):
+    """Takes preprocessed buffers (for a single image, i.e. shapes are HWC)
+    and constructs both diffuse and specular KPCN inputs.
+
+    This function does not split the image into patches.
+    If such behavior is desired, it can be applied after this function.
+    """
+    var_features = np.concatenate(
+        [buffers['normalVariance'], buffers['albedoVariance'], buffers['depthVariance']], axis=-1)
+
+    grad_y, grad_x = compute_buffer_gradients(buffers)
+    grad_y_features = np.concatenate(
+        [grad_y['normal'], grad_y['albedo'], grad_y['depth']], axis=-1)
+    grad_x_features = np.concatenate(
+        [grad_x['normal'], grad_x['albedo'], grad_x['depth']], axis=-1)
+
+    diff_in = {
+        'color': buffers['diffuse'],
+        'grad_x': np.concatenate([grad_x['diffuse'], grad_x_features], axis=-1),
+        'grad_y': np.concatenate([grad_y['diffuse'], grad_y_features], axis=-1),
+        'var_color': buffers['diffuseVariance'],
+        'var_features': var_features,
+    }
+    spec_in = {
+        'color': buffers['specular'],
+        'grad_x': np.concatenate([grad_x['specular'], grad_x_features], axis=-1),
+        'grad_y': np.concatenate([grad_y['specular'], grad_y_features], axis=-1),
+        'var_color': buffers['specularVariance'],
+        'var_features': var_features,
+    }
+
+    # add batch dim
+    for c, data in diff_in.items():
+        diff_in[c] = np.expand_dims(data, 0)
+    for c, data in spec_in.items():
+        spec_in[c] = np.expand_dims(data, 0)
+
+    return diff_in, spec_in
 
 def postprocess_diffuse(out_diffuse, albedo, eps):
     """Multiply back albedo."""

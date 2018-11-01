@@ -1,4 +1,4 @@
-op: sample_data
+op: train
 
 data:
   data_dir: /media/owen/302371f7-852e-4f78-94e6-4d3ffebda36e/deep_learning_denoising/renderings
@@ -45,11 +45,15 @@ train_params:
 
 kpcn:
   diff:
-    include: True
-    restore_path: /home/owen/workspace/metro/scripts/checkpoints/diff_saved/var-59999
-  spec:
-    include: False
+    train_include: True
     restore_path: x
+  spec:
+    train_include: False
+    restore_path: x
+
+evaluate:
+  im_path: /media/owen/302371f7-852e-4f78-94e6-4d3ffebda36e/deep_learning_denoising/renderings/bathroom2/98765255-00256spp.exr
+  out_dir: out
 
 layers:
   - type: conv2d
