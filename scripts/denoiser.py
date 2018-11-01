@@ -263,9 +263,12 @@ class Denoiser(object):
             for split in ['train', 'validation', 'test']:  # train gets the first 0.X, val gets the next 0.X, ...
                 start = end  # [
                 end = start + int(round(splits[split] * len(input_exr_files)))  # )
-                if split == 'test' and sum(splits.values()) == 1.0:
+                if split == 'test' and splits['test'] != 0.0 and sum(splits.values()) == 1.0:
                     end = len(input_exr_files)
                 print('[o] %s split: %d/%d permutations.' % (split, end - start, len(input_exr_files)))
+
+                if end - start == 0:
+                    continue
 
                 _in_files = input_exr_files[start:end]
                 _gt_files = gt_exr_files[start:end]
