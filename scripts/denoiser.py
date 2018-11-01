@@ -428,14 +428,14 @@ class Denoiser(object):
             os.makedirs(out_dir)
         _input_id = os.path.basename(im_path)
         _input_id = _input_id[:_input_id.rfind('.')]
-        imsave(os.path.join(out_dir, _input_id + '_in.jpg'),  _in)
-        imsave(os.path.join(out_dir, _input_id + '_out.jpg'), out)
+        imsave(os.path.join(out_dir, _input_id + '_00_in.jpg'),  _in)
+        imsave(os.path.join(out_dir, _input_id + '_01_out.jpg'), out)
         print('[+] Wrote result to %s.'
-            % os.path.join(out_dir, _input_id + '_out.jpg'))
+            % os.path.join(out_dir, _input_id + '_01_out.jpg'))
         ims_to_viz = [_in, out]
         if gt_out is not None:
             ims_to_viz.append(gt_out)
-            imsave(os.path.join(out_dir, _input_id + '_gt.jpg'), gt_out)
+            imsave(os.path.join(out_dir, _input_id + '_02_gt.jpg'), gt_out)
         du.show_multiple(*ims_to_viz, row_max=len(ims_to_viz), block_on_viz=True)
 
 if __name__ == '__main__':
