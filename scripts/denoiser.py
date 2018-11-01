@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import glob
 import yaml
@@ -7,6 +8,7 @@ import shutil
 import random
 import argparse
 import numpy as np
+from math import sqrt
 import tensorflow as tf
 from scipy.misc import imsave
 
@@ -311,17 +313,24 @@ class Denoiser(object):
         is_training   = config['op'] == 'train'
         learning_rate = config['train_params']['learning_rate']
         summary_dir   = config['train_params'].get('summary_dir', 'summaries')
+        gt_spp        = config['data']['gt_spp']
+        out_dir       = config['evaluate']['out_dir']
+
+        if type(learning_rate) == str:
+            learning_rate = eval(learning_rate)
 
         im_path = config['evaluate']['im_path']
         if im_path.endswith('exr'):
-            input_buffers = read_exr(input_filepath, fp16=self.fp16)
-            input_buffers = stack_channels(input_buffers)
+            input_buffers = du.read_exr(im_path, fp16=self.fp16)
+            input_buffers = du.stack_channels(input_buffers)
         else:
             dot_idx      = im_path.rfind('.')
             filetype_str = ' ' + im_path[dot_idx:] if dot_idx != -1 else ''
             raise TypeError('[-] Filetype%s not supported yet.' % filetype_str)
+        print('[o] Denoising %s...' % os.path.basename(im_path))
 
         h, w = input_buffers['diffuse'].shape[:2]
+        ks = int(sqrt(layers_config[-1]['num_outputs']))
 
         # clip
         if config['data']['clip_ims']:
@@ -336,13 +345,21 @@ class Denoiser(object):
         # make network inputs
         diff_in, spec_in = du.make_network_inputs(input_buffers)
 
+        # split image into l/r sub-images (with overlap)
+        # because my GPU doesn't have enough memory to deal with the whole image at once
+        l_diff_in = {c: data[:, :, :w//2+ks,  :] for c, data in diff_in.items()}
+        r_diff_in = {c: data[:, :, -w//2-ks:, :] for c, data in diff_in.items()}
+        l_spec_in = {c: data[:, :, :w//2+ks,  :] for c, data in spec_in.items()}
+        r_spec_in = {c: data[:, :, -w//2-ks:, :] for c, data in spec_in.items()}
+
         # define networks
         tf_placeholders = {
-            'color':        tf.placeholder(self.tf_dtype, shape=(None, buffer_h, buffer_w, 3)),
-            'grad_x':       tf.placeholder(self.tf_dtype, shape=(None, buffer_h, buffer_w, 10)),
-            'grad_y':       tf.placeholder(self.tf_dtype, shape=(None, buffer_h, buffer_w, 10)),
-            'var_color':    tf.placeholder(self.tf_dtype, shape=(None, buffer_h, buffer_w, 1)),
-            'var_features': tf.placeholder(self.tf_dtype, shape=(None, buffer_h, buffer_w, 3)),
+            'color':        tf.placeholder(self.tf_dtype, shape=(None, h, w // 2 + ks, 3)),
+            'grad_x':       tf.placeholder(self.tf_dtype, shape=(None, h, w // 2 + ks, 10)),
+            'grad_y':       tf.placeholder(self.tf_dtype, shape=(None, h, w // 2 + ks, 10)),
+            'var_color':    tf.placeholder(self.tf_dtype, shape=(None, h, w // 2 + ks, 1)),
+            'var_features': tf.placeholder(self.tf_dtype, shape=(None, h, w // 2 + ks, 3)),
+            'gt_out':       tf.placeholder(self.tf_dtype, shape=(None, h, w // 2 + ks, 3)),  # not used
         }
         self.diff_kpcn = KPCN(
             tf_placeholders, patch_size, patch_size, layers_config,
@@ -350,15 +367,6 @@ class Denoiser(object):
         self.spec_kpcn = KPCN(
             tf_placeholders, patch_size, patch_size, layers_config,
             is_training, learning_rate, summary_dir, scope='specular')
-
-        ks = self.diff_kpcn.kernel_size
-
-        # split image into l/r sub-images (with overlap)
-        # because my GPU doesn't have enough memory to deal with the whole image at once
-        l_diff_in = {c: data[:, :, :w//2+ks, :] for c, data in diff_in.items()}
-        r_diff_in = {c: data[:, :, w//2-ks:, :] for c, data in diff_in.items()}
-        l_spec_in = {c: data[:, :, :w//2+ks, :] for c, data in spec_in.items()}
-        r_spec_in = {c: data[:, :, w//2-ks:, :] for c, data in spec_in.items()}
 
         tf_config = tf.ConfigProto(
             device_count={'GPU': 1}, allow_soft_placement=True)
@@ -374,18 +382,20 @@ class Denoiser(object):
             if os.path.isfile(spec_restore_path + '.index'):
                 self.spec_kpcn.restore(sess, spec_restore_path)
 
-            l_diff_out = self.diff_kpcn.run(self, sess, l_diff_in)
-            r_diff_out = self.diff_kpcn.run(self, sess, r_diff_in)
-            l_spec_out = self.spec_kpcn.run(self, sess, l_spec_in)
-            r_spec_out = self.spec_kpcn.run(self, sess, r_spec_in)
+            start_time = time.time()
+            l_diff_out = self.diff_kpcn.run(sess, l_diff_in)
+            r_diff_out = self.diff_kpcn.run(sess, r_diff_in)
+            l_spec_out = self.spec_kpcn.run(sess, l_spec_in)
+            r_spec_out = self.spec_kpcn.run(sess, r_spec_in)
+            print('[o] graph execution time: %s' % du.format_seconds(time.time() - start_time))
 
         # composite
         diff_out = np.zeros((h, w, 3))
-        diff_out[:, :w//2, :] = l_diff_out[0, :, :w//2, :]
-        diff_out[:, w//2:, :] = r_diff_out[0, :, w//2:, :]
+        diff_out[:, :w//2, :] = l_diff_out[0, :, :w//2,  :]
+        diff_out[:, w//2:, :] = r_diff_out[0, :, -w//2:, :]
         spec_out = np.zeros((h, w, 3))
-        spec_out[:, :w//2, :] = l_spec_out[0, :, :w//2, :]
-        spec_out[:, w//2:, :] = r_spec_out[0, :, w//2:, :]
+        spec_out[:, :w//2, :] = l_spec_out[0, :, :w//2,  :]
+        spec_out[:, w//2:, :] = r_spec_out[0, :, -w//2:, :]
 
         # postprocess
         diff_out = du.postprocess_diffuse(diff_out, input_buffers['albedo'], self.eps)
@@ -399,11 +409,31 @@ class Denoiser(object):
             [input_buffers['R'], input_buffers['G'], input_buffers['B']], axis=-1)
         _in = du.clip_and_gamma_correct(_in)
 
+        # try to get gt image for comparison (might not exist)
+        gt_out = None
+        match = re.match(r'^(/.*\d+)-\d{5}spp.exr$', im_path)
+        if match:
+            gt_path = '%s-%sspp.exr' % (match.group(1), str(gt_spp).zfill(5))
+            gt_buffers = du.read_exr(gt_path, fp16=self.fp16)
+            gt_buffers = du.stack_channels(gt_buffers)
+            gt_out = np.concatenate(
+                [gt_buffers['R'], gt_buffers['G'], gt_buffers['B']], axis=-1)
+            gt_out = du.clip_and_gamma_correct(gt_out)
+
         # write and show
-        out_path = os.path.join(out_dir, 'out_' + os.path.basename(im_path))
-        imsave(out_path, out)
-        print('[+] Wrote result to %s.' % out_path)
-        du.show_multiple(_in, out, row_max=2, block_on_viz=True)
+        if not os.path.exists(out_dir):
+            os.makedirs(out_dir)
+        _input_id = os.path.basename(im_path)
+        _input_id = _input_id[:_input_id.rfind('.')]
+        imsave(os.path.join(out_dir, _input_id + '_in.jpg'),  _in)
+        imsave(os.path.join(out_dir, _input_id + '_out.jpg'), out)
+        print('[+] Wrote result to %s.'
+            % os.path.join(out_dir, _input_id + '_out.jpg'))
+        ims_to_viz = [_in, out]
+        if gt_out is not None:
+            ims_to_viz.append(gt_out)
+            imsave(os.path.join(out_dir, _input_id + '_gt.jpg'), gt_out)
+        du.show_multiple(*ims_to_viz, row_max=len(ims_to_viz), block_on_viz=True)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()

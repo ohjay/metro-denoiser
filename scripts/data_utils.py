@@ -418,7 +418,7 @@ def sample_patches(buffers, num_patches, patch_h, patch_w, debug_dir, input_id,
         rw = patch_w // 2
         rowlen = int(sqrt(num_samples)) + 1
         nrows = (num_samples - 1) // rowlen + 1  # works because I know num_samples > 0
-        ncols = num_samples % rowlen if nrows == 1 else rowlen
+        ncols = num_samples % rowlen if num_samples < rowlen else rowlen
         patches = np.zeros((nrows * patch_h, ncols * patch_w, 3))
         patches_overlay = color * 0.1  # credit to Bako et al. for this visualization idea
         for i, (y, x) in enumerate(patch_indices):
@@ -607,11 +607,9 @@ def show_multiple(*ims, **kwargs):
         plt.show()
 
     # Determine number of rows and columns
-    nrows, ncols = len(ims) // row_max, len(ims) % row_max
-    if ncols == 0:
-        ncols = row_max
-    else:
-        nrows += 1
+    assert len(ims) > 0
+    nrows = (len(ims) - 1) // row_max + 1
+    ncols = len(ims) % row_max if len(ims) < row_max else row_max
     base_nrows = nrows
     if len(ims[0].shape) == 4:
         nrows *= min(len(ims[0].shape), batch_max)
