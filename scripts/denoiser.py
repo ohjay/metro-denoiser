@@ -26,12 +26,15 @@ class Denoiser(object):
 
     @staticmethod
     def _training_loop(sess, kpcn, train_init_op, val_init_op, identifier, log_freq,
-                       save_freq, viz_freq, max_epochs, checkpoint_dir, block_on_viz, restore_path=''):
+                       save_freq, viz_freq, max_epochs, checkpoint_dir, block_on_viz,
+                       restore_path='', reset_lr=True):
         # initialization/restore
         sess.run(tf.group(
             tf.global_variables_initializer(), tf.local_variables_initializer()))
         if os.path.isfile(restore_path + '.index'):
             kpcn.restore(sess, restore_path)
+        if reset_lr:
+            sess.run(kpcn.global_step.assign(0))  # reset learning rate
 
         start_time = time.time()
 
@@ -81,7 +84,8 @@ class Denoiser(object):
                 kpcn.validation_writer.add_summary(loss_summary, i)
                 time_elapsed = time.time() - start_time
                 print('[o][%s] Validation loss: %.5f' % (identifier, avg_loss))
-                print('[o][%s] Epoch %d complete. Time elapsed: %.2fs' % (identifier, epoch + 1, time_elapsed))
+                print('[o][%s] Epoch %d complete. Time elapsed: %s.' \
+                    % (identifier, epoch + 1, du.format_seconds(time_elapsed)))
         except KeyboardInterrupt:
             print('')
             print('[KeyboardInterrupt] summary')
@@ -97,18 +101,19 @@ class Denoiser(object):
                 os._exit(0)
 
     def train(self, config):
-        log_freq = config['train_params'].get('log_freq', 100)
-        save_freq = config['train_params'].get('save_freq', 1000)
-        viz_freq = config['train_params'].get('viz_freq', -1)
+        log_freq       = config['train_params'].get('log_freq', 100)
+        save_freq      = config['train_params'].get('save_freq', 1000)
+        viz_freq       = config['train_params'].get('viz_freq', -1)
         checkpoint_dir = config['train_params']['checkpoint_dir']
-        max_epochs = config['train_params'].get('max_epochs', 1e9)
-        batch_size = config['train_params'].get('batch_size', 5)
-        patch_size = config['data'].get('patch_size', 65)
-        layers_config = config['layers']
-        is_training = config['op'] == 'train'
-        learning_rate = config['train_params']['learning_rate']
-        summary_dir = config['train_params'].get('summary_dir', 'summaries')
-        block_on_viz = config['train_params'].get('block_on_viz', False)
+        max_epochs     = config['train_params'].get('max_epochs', 1e9)
+        batch_size     = config['train_params'].get('batch_size', 5)
+        patch_size     = config['data'].get('patch_size', 65)
+        layers_config  = config['layers']
+        is_training    = config['op'] == 'train'
+        learning_rate  = config['train_params']['learning_rate']
+        summary_dir    = config['train_params'].get('summary_dir', 'summaries')
+        block_on_viz   = config['train_params'].get('block_on_viz', False)
+        reset_lr       = config['train_params'].get('reset_lr', True)
 
         if type(learning_rate) == str:
             learning_rate = eval(learning_rate)
@@ -130,7 +135,7 @@ class Denoiser(object):
                     tf_buffers, patch_size, patch_size, layers_config,
                     is_training, learning_rate, summary_dir, scope='diffuse')
                 self._training_loop(sess, self.diff_kpcn, init_ops['diff_train'], init_ops['diff_val'], 'diff',
-                    log_freq, save_freq, viz_freq, max_epochs, diff_checkpoint_dir, block_on_viz, diff_restore_path)
+                    log_freq, save_freq, viz_freq, max_epochs, diff_checkpoint_dir, block_on_viz, diff_restore_path, reset_lr)
 
             if config['kpcn']['spec']['include']:
                 spec_checkpoint_dir = os.path.join(checkpoint_dir, 'spec')
@@ -140,13 +145,14 @@ class Denoiser(object):
                     tf_buffers, patch_size, patch_size, layers_config,
                     is_training, learning_rate, summary_dir, scope='specular')
                 self._training_loop(sess, self.spec_kpcn, init_ops['spec_train'], init_ops['spec_val'], 'spec',
-                    log_freq, save_freq, viz_freq, max_epochs, spec_checkpoint_dir, block_on_viz, spec_restore_path)
+                    log_freq, save_freq, viz_freq, max_epochs, spec_checkpoint_dir, block_on_viz, spec_restore_path, reset_lr)
 
     def load_data(self, config, shuffle=True):
-        batch_size = config['train_params'].get('batch_size', 5)
-        patch_size = config['data'].get('patch_size', 65)
+        batch_size   = config['train_params'].get('batch_size', 5)
+        patch_size   = config['data'].get('patch_size', 65)
         tfrecord_dir = config['data']['tfrecord_dir']
-        scenes = config['data']['scenes']
+        scenes       = config['data']['scenes']
+        clip_ims     = config['data']['clip_ims']
 
         train_filenames = [
             os.path.join(tfrecord_dir, scene, 'train', 'data.tfrecords') for scene in scenes]
@@ -163,8 +169,8 @@ class Denoiser(object):
             val_dataset_size_estimate   = (int(200 / pstep) * patches_per_im) * len(val_filenames)
             size_lim = config['data'].get('shuffle_buffer_size_limit', 80000)
 
-            decode_diff = du.make_decode(True, self.tf_dtype, patch_size, patch_size, self.eps)
-            decode_spec = du.make_decode(False, self.tf_dtype, patch_size, patch_size, self.eps)
+            decode_diff = du.make_decode(True, self.tf_dtype, patch_size, patch_size, self.eps, clip_ims)
+            decode_spec = du.make_decode(False, self.tf_dtype, patch_size, patch_size, self.eps, clip_ims)
             datasets = {
                 'diff_train': train_dataset.map(decode_diff, num_parallel_calls=4),
                 'spec_train': train_dataset.map(decode_spec, num_parallel_calls=4),
@@ -220,20 +226,21 @@ class Denoiser(object):
 
     def sample_data(self, config):
         """Write data to TFRecord files for later use."""
-        data_dir       = config['data']['data_dir']
-        scenes         = config['data']['scenes']
-        splits         = config['data']['splits']
-        in_filename    = '*-%sspp.exr' % str(config['data']['in_spp']).zfill(5)
-        gt_filename    = '*-%sspp.exr' % str(config['data']['gt_spp']).zfill(5)
-        tfrecord_dir   = config['data']['tfrecord_dir']
-        pstart         = config['data'].get('parse_start', 0)
-        pstep          = config['data'].get('parse_step', 1)
-        pshuffle       = config['data'].get('parse_shuffle', False)
-        patch_size     = config['data'].get('patch_size', 65)
-        patches_per_im = config['data'].get('patches_per_im', 400)
-        save_debug_ims = config['data'].get('save_debug_ims', False)
-        diff_weight    = config['data'].get('diff_var_weight', 1.0)
-        spec_weight    = config['data'].get('spec_var_weight', 1.0)
+        data_dir             = config['data']['data_dir']
+        scenes               = config['data']['scenes']
+        splits               = config['data']['splits']
+        in_filename          = '*-%sspp.exr' % str(config['data']['in_spp']).zfill(5)
+        gt_filename          = '*-%sspp.exr' % str(config['data']['gt_spp']).zfill(5)
+        tfrecord_dir         = config['data']['tfrecord_dir']
+        pstart               = config['data'].get('parse_start', 0)
+        pstep                = config['data'].get('parse_step', 1)
+        pshuffle             = config['data'].get('parse_shuffle', False)
+        patch_size           = config['data'].get('patch_size', 65)
+        patches_per_im       = config['data'].get('patches_per_im', 400)
+        save_debug_ims       = config['data'].get('save_debug_ims', False)
+        save_debug_ims_every = config['data'].get('save_debug_ims_every', 1)
+        color_var_weight     = config['data'].get('color_var_weight', 1.0)
+        normal_var_weight    = config['data'].get('normal_var_weight', 1.0)
 
         for scene in scenes:
             input_exr_files = sorted(glob.glob(os.path.join(data_dir, scene, in_filename)))
@@ -271,7 +278,8 @@ class Denoiser(object):
                 debug_dir = tfrecord_scene_split_dir if save_debug_ims else ''
                 du.write_tfrecords(
                     tfrecord_filepath, _in_files, _gt_files, patches_per_im, patch_size, self.fp16,
-                    shuffle=pshuffle, debug_dir=debug_dir, diff_weight=diff_weight, spec_weight=spec_weight)
+                    shuffle=pshuffle, debug_dir=debug_dir, save_debug_ims_every=save_debug_ims_every,
+                    color_var_weight=color_var_weight, normal_var_weight=normal_var_weight)
 
     def visualize_data(self, config):
         """Visualize sampled data stored in the TFRecord files."""
