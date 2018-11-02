@@ -32,16 +32,19 @@
     <h2>Deep Convolutional Denoising</h2>
     <p>So far, I've implemented a KPCN pipeline as per <a href="http://cseweb.ucsd.edu/~viscomp/classes/cse274/fa18/papers/a97-bako.pdf">Kernel-Predicting Convolutional Networks for Denoising Monte Carlo Renderings</a> (Bako et al.). This includes data sampling, network construction, network training, visualization, and evaluation routines, all of which are highly configurable. As far as I'm aware, I have incorporated all KPCN components described in sections 4 and 5 of the paper, i.e. excluding DPCN and analysis alone, with the caveat that my data, memory, and time bandwidths have hitherto been lacking in comparison.</p>
     
-    <p>I thought I'd start with an example.</p>
+    <p>
+      I thought I'd start with an example.
+      <br />
+      This is the network applied to an image from the validation set.</p>
     
     <table><tr><td>
-      <img src="assets/images/10064185-00256spp_00_in.jpg" width="100%" data-action="zoom" />
-      <img src="assets/images/10064185-00256spp_01_out.jpg" width="100%" data-action="zoom" />
-      <img src="assets/images/10064185-00256spp_02_gt.jpg" width="100%" data-action="zoom" />
+      <img src="assets/images/18889126-00256spp_00_in.jpg" width="100%" data-action="zoom" />
+      <img src="assets/images/18889126-00256spp_01_out.jpg" width="100%" data-action="zoom" />
+      <img src="assets/images/18889126-00256spp_02_gt.jpg" width="100%" data-action="zoom" />
       <figcaption>Figure 01: (from top to bottom) input, output, reference</figcaption>
     </td></tr></table>
     
-    <p>It's part of the way there, but mostly seems to be blurring the noise instead of removing it. Each of the diffuse and specular networks was trained for 15,000 iterations (~50 epochs) on 1500 65x65 patches sampled from 150 different renderings of a single scene. By contrast, Bako et al. trained each network for 750,000 iterations on 240,000 65x65 patches sampled from 25 "diverse frames." They then fine-tuned the complete system for an additional 250,000 iterations, claiming it helps recover detail and obtain sharper results. While I have the infrastructure set up to do this, I haven't gotten around to using it as part of a full training session yet.</p>
+    <p>It's part of the way there, but there's still a lot of overblurring and artifacts. Each of the diffuse and specular networks was trained for 30,000 iterations (~100 epochs) on 1500 65x65 patches sampled from 150 different renderings of a single scene. By contrast, Bako et al. trained each network for 750,000 iterations on 240,000 65x65 patches sampled from 25 "diverse frames." They then fine-tuned the complete system for an additional 250,000 iterations, claiming it helps recover detail and obtain sharper results. While I have the infrastructure set up to do this, I haven't gotten around to using it as part of a full training session yet.</p>
     
     <p>I have not sampled the same number of patches, nor trained my networks to a comparable degree, for the simple reason that I have not yet had the time necessary to sample or train. In order to avoid loading EXR files at runtime upon each instance of training, I load them beforehand and sample/save patches into TFRecord files. However, this is time-consuming.</p>
     
