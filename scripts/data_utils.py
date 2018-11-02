@@ -1,5 +1,6 @@
 import os
 import cv2
+import time
 import Imath
 import random
 import OpenEXR
@@ -160,8 +161,8 @@ def _bytes_feature(value):
     return tf.train.Feature(bytes_list=tf.train.BytesList(value=[value]))
 
 def write_tfrecords(tfrecord_filepath, input_exr_files, gt_exr_files,
-                    patches_per_im, patch_size, fp16, shuffle=False,
-                    debug_dir='', diff_weight=1.0, spec_weight=1.0):
+                    patches_per_im, patch_size, fp16, shuffle=False, debug_dir='',
+                    save_debug_ims_every=1, color_var_weight=1.0, normal_var_weight=1.0):
     """Export PATCHES_PER_IM examples for each EXR file.
     Accepts two lists of EXR filepaths with corresponding orderings.
 
@@ -180,6 +181,8 @@ def write_tfrecords(tfrecord_filepath, input_exr_files, gt_exr_files,
                 writer.write(example.SerializeToString())
             print('[+] Wrote %d examples to TFRecord file `%s`.' % (len(all_examples), tfrecord_filepath))
 
+        i = 0
+        start_time = time.time()
         for input_filepath, gt_filepath in zip(input_exr_files, gt_exr_files):
             # for filename str printing
             input_dirname = os.path.dirname(input_filepath)
@@ -189,10 +192,11 @@ def write_tfrecords(tfrecord_filepath, input_exr_files, gt_exr_files,
             input_buffers = read_exr(input_filepath, fp16=fp16)
             input_buffers = stack_channels(input_buffers)
             try:
-                _input_id = input_basename[:input_basename.rfind('.')]
+                _input_id  = input_basename[:input_basename.rfind('.')]
+                _debug_dir = debug_dir if i % save_debug_ims_every == 0 else ''
                 patch_indices = sample_patches(
-                    input_buffers, patches_per_im, patch_size, patch_size,
-                    debug_dir, _input_id, diff_weight=diff_weight, spec_weight=spec_weight)
+                    input_buffers, patches_per_im, patch_size, patch_size, _debug_dir, _input_id,
+                    color_var_weight=color_var_weight, normal_var_weight=normal_var_weight)
             except ValueError as e:
                 print('[-] Invalid value during %s sampling. (%s)' % (input_id, str(e)))
                 continue
@@ -228,11 +232,16 @@ def write_tfrecords(tfrecord_filepath, input_exr_files, gt_exr_files,
                     all_examples.append(example)
                 else:
                     writer.write(example.SerializeToString())
-            print('[o] Collected %d examples for %s.' % (len(patch_indices), input_id))
+            print('[o] Collected %d examples for %s (%d/%d).'
+                % (len(patch_indices), input_id, i + 1, len(input_exr_files)))
+            if (i + 1) % 10 == 0:
+                print('--- TIME ELAPSED: %s' % format_seconds(time.time() - start_time))
 
             if shuffle and len(all_examples) >= all_examples_size_limit:
                 shuffle_and_write()
                 del all_examples[:]
+
+            i += 1
 
         # (final) shuffle
         if shuffle:
@@ -241,7 +250,7 @@ def write_tfrecords(tfrecord_filepath, input_exr_files, gt_exr_files,
         else:
             print('[+] Wrote examples to TFRecord file `%s`.' % tfrecord_filepath)
 
-def make_decode(is_diffuse, tf_dtype, buffer_h, buffer_w, eps):
+def make_decode(is_diffuse, tf_dtype, buffer_h, buffer_w, eps, clip_ims):
 
     def decode(serialized_example):
         """De-serialize and preprocess TFRecord example."""
@@ -268,6 +277,15 @@ def make_decode(is_diffuse, tf_dtype, buffer_h, buffer_w, eps):
         for name in _features.keys():
             p[name] = tf.decode_raw(features[name], tf_dtype)
             p[name] = tf.reshape(p[name], [buffer_h, buffer_w, N_CHANNELS[name]])
+
+        # clipping
+        if clip_ims:
+            if is_diffuse:
+                p['diffuse']     = tf.clip_by_value(p['diffuse'], 0.0, 1.0)
+                p['gt_diffuse']  = tf.clip_by_value(p['gt_diffuse'], 0.0, 1.0)
+            else:
+                p['specular']    = tf.clip_by_value(p['specular'], 0.0, 1.0)
+                p['gt_specular'] = tf.clip_by_value(p['gt_specular'], 0.0, 1.0)
 
         # preprocess
         if is_diffuse:
@@ -329,7 +347,7 @@ def compute_processed_variance(im, window_h, window_w):
     variance = compute_variance(im, window_h, window_w)
     variance = compute_rel_luminance(variance)
     variance = gaussian_filter_wrapper(variance, sigma=1.0)
-    return variance
+    return np.clip(variance / np.amax(variance), 0.0, 1.0)
 
 def invalid_complain(data):
     """Raise an error if there are invalid values in the given NumPy array."""
@@ -351,7 +369,7 @@ def gaussian_filter_wrapper(signal, sigma=1.0):
     return signal
 
 def sample_patches(buffers, num_patches, patch_h, patch_w, debug_dir, input_id,
-                   diff_weight=1.0, spec_weight=1.0, normal_weight=0.5):
+                   color_var_weight=1.0, normal_var_weight=1.0):
     """
     Sample NUM_PATCHES (y, x) indices for (PATCH_H, PATCH_W)-sized patches from the given frame.
     As per Bako et al., we will find candidate patches and prune based on color/normal variance.
@@ -363,17 +381,17 @@ def sample_patches(buffers, num_patches, patch_h, patch_w, debug_dir, input_id,
     y_range = (patch_h // 2, h - patch_h // 2)  # [)
     x_range = (patch_w // 2, w - patch_w // 2)  # [)
 
+    color = clip_and_gamma_correct(
+        np.concatenate([buffers['R'], buffers['G'], buffers['B']], axis=-1))
+
     # 2D PDF ---------------------------------------------------------------
 
+    c_var = compute_processed_variance(color, patch_h, patch_w)
     n_var = compute_processed_variance(buffers['normal'], patch_h, patch_w)
-    d_var = compute_processed_variance(buffers['diffuse'], patch_h, patch_w)
-    s_var = compute_processed_variance(buffers['specular'], patch_h, patch_w)
 
-    pdf = normal_weight * n_var + diff_weight * d_var + spec_weight * s_var
-    if diff_weight > 0:
-        pdf *= (d_var > 0)  # we don't want zero-variance patches
-    if spec_weight > 0:
-        pdf *= (s_var > 0)
+    pdf = color_var_weight * c_var + normal_var_weight * n_var
+    if color_var_weight > 0:
+        pdf *= (c_var > 0)  # no zero-variance patches
 
     # Set out-of-bounds regions to zero
     _template = np.zeros_like(pdf)
@@ -396,44 +414,39 @@ def sample_patches(buffers, num_patches, patch_h, patch_w, debug_dir, input_id,
 
     if debug_dir:
         # tile patches into debug image
-        if diff_weight > 0 and spec_weight == 0:
-            source_im = buffers['diffuse']
-        elif diff_weight == 0 and spec_weight > 0:
-            source_im = buffers['specular']
-        else:
-            source_im = np.concatenate(
-                [buffers['R'], buffers['G'], buffers['B']], axis=-1)
         rh = patch_h // 2
         rw = patch_w // 2
         rowlen = int(sqrt(num_samples)) + 1
         nrows = (num_samples - 1) // rowlen + 1  # works because I know num_samples > 0
-        ncols = num_samples % rowlen if nrows == 1 else rowlen
+        ncols = num_samples % rowlen if num_samples < rowlen else rowlen
         patches = np.zeros((nrows * patch_h, ncols * patch_w, 3))
-        patches_overlay = source_im * 0.1  # credit to Bako et al. for this visualization idea
+        patches_overlay = color * 0.1  # credit to Bako et al. for this visualization idea
         for i, (y, x) in enumerate(patch_indices):
             py = (i // rowlen) * patch_h
             px = (i % rowlen)  * patch_w
-            patches[py:py+patch_h, px:px+patch_w] = source_im[y-rh:y+rh+1, x-rw:x+rw+1, :]
-            patches_overlay[y-rh:y+rh+1, x-rw:x+rw+1, :] = source_im[y-rh:y+rh+1, x-rw:x+rw+1, :]
+            patches[py:py+patch_h, px:px+patch_w] = color[y-rh:y+rh+1, x-rw:x+rw+1, :]
+            patches_overlay[y-rh:y+rh+1, x-rw:x+rw+1, :] = color[y-rh:y+rh+1, x-rw:x+rw+1, :]
 
         qsize = (w // 2, h // 2)  # w, h ordering
+        _c_var = cv2.resize(c_var, qsize)
         _n_var = cv2.resize(n_var, qsize)
-        _d_var = cv2.resize(d_var, qsize)
-        _s_var = cv2.resize(s_var, qsize)
         _pdf   = cv2.resize(pdf,   qsize)
 
-        imsave(os.path.join(debug_dir, input_id + '_normal_var.jpg'),      _n_var)
-        imsave(os.path.join(debug_dir, input_id + '_diffuse_var.jpg'),     _d_var)
-        imsave(os.path.join(debug_dir, input_id + '_specular_var.jpg'),    _s_var)
-        imsave(os.path.join(debug_dir, input_id + '_pdf.jpg'),             _pdf)
-        imsave(os.path.join(debug_dir, input_id + '_patches.jpg'),         patches)
-        imsave(os.path.join(debug_dir, input_id + '_patches_overlay.jpg'), patches_overlay)
+        imsave(os.path.join(debug_dir, input_id + '_00_color_var.jpg'),       _c_var)
+        imsave(os.path.join(debug_dir, input_id + '_01_normal_var.jpg'),      _n_var)
+        imsave(os.path.join(debug_dir, input_id + '_02_pdf.jpg'),             _pdf)
+        imsave(os.path.join(debug_dir, input_id + '_03_patches.jpg'),         patches)
+        imsave(os.path.join(debug_dir, input_id + '_04_patches_overlay.jpg'), patches_overlay)
 
     return patch_indices
 
 # ===============================================
 # PRE/POST-PROCESSING (NUMPY)
 # ===============================================
+
+def clip_and_gamma_correct(im):
+    assert im.dtype != np.uint8
+    return np.clip(im, 0.0, 1.0) ** (1.0 / 2.2)
 
 def preprocess_diffuse(buffers, eps):
     """Factor out albedo. Destructive."""
@@ -461,26 +474,24 @@ def compute_buffer_gradients(buffers):
     Return horizontal and vertical gradients for
     diffuse buffer (3 channels), specular buffer (3 channels),
     normal buffer (3 channels), albedo buffer (3 channels), and depth buffer (1 channel).
+
+    Note: cannot use `np.gradient` because it uses central differences, whereas
+    `tf.image.image_gradients`, this function's counterpart, uses forward differences.
     """
-    def _three_channel_grad(_buffer):
-        grad_ry, grad_rx = np.gradient(_buffer[:, :, 0])
-        grad_gy, grad_gx = np.gradient(_buffer[:, :, 1])
-        grad_by, grad_bx = np.gradient(_buffer[:, :, 2])
+    def _image_gradients(_buffer):
+        grad_y = np.zeros_like(_buffer)
+        grad_y[:-1, :, :] = _buffer[1:, :, :] - _buffer[:-1, :, :]
 
-        grad_y = np.stack([grad_ry, grad_gy, grad_by], axis=-1)
-        grad_x = np.stack([grad_rx, grad_gx, grad_bx], axis=-1)
+        grad_x = np.zeros_like(_buffer)
+        grad_x[:, :-1, :] = _buffer[:, 1:, :] - _buffer[:, :-1, :]
+
         return grad_y, grad_x
 
-    def _one_channel_grad(_buffer):
-        grad_y, grad_x = np.gradient(_buffer[:, :, 0])
-        grad_y, grad_x = np.expand_dims(grad_y, -1), np.expand_dims(grad_x, -1)
-        return grad_y, grad_x
-
-    diffuse_grad_y,  diffuse_grad_x  = _three_channel_grad(buffers['diffuse'])
-    specular_grad_y, specular_grad_x = _three_channel_grad(buffers['specular'])
-    normal_grad_y,   normal_grad_x   = _three_channel_grad(buffers['normal'])
-    albedo_grad_y,   albedo_grad_x   = _three_channel_grad(buffers['albedo'])
-    depth_grad_y,    depth_grad_x    = _one_channel_grad(buffers['depth'])
+    diffuse_grad_y,  diffuse_grad_x  = _image_gradients(buffers['diffuse'])
+    specular_grad_y, specular_grad_x = _image_gradients(buffers['specular'])
+    normal_grad_y,   normal_grad_x   = _image_gradients(buffers['normal'])
+    albedo_grad_y,   albedo_grad_x   = _image_gradients(buffers['albedo'])
+    depth_grad_y,    depth_grad_x    = _image_gradients(buffers['depth'])
 
     grad_y = {
         'diffuse': diffuse_grad_y,
@@ -497,6 +508,45 @@ def compute_buffer_gradients(buffers):
         'depth': depth_grad_x,
     }
     return grad_y, grad_x
+
+def make_network_inputs(buffers):
+    """Takes preprocessed buffers (for a single image, i.e. shapes are HWC)
+    and constructs both diffuse and specular KPCN inputs.
+
+    This function does not split the image into patches.
+    If such behavior is desired, it can be applied after this function.
+    """
+    var_features = np.concatenate(
+        [buffers['normalVariance'], buffers['albedoVariance'], buffers['depthVariance']], axis=-1)
+
+    grad_y, grad_x = compute_buffer_gradients(buffers)
+    grad_y_features = np.concatenate(
+        [grad_y['normal'], grad_y['albedo'], grad_y['depth']], axis=-1)
+    grad_x_features = np.concatenate(
+        [grad_x['normal'], grad_x['albedo'], grad_x['depth']], axis=-1)
+
+    diff_in = {
+        'color': buffers['diffuse'],
+        'grad_x': np.concatenate([grad_x['diffuse'], grad_x_features], axis=-1),
+        'grad_y': np.concatenate([grad_y['diffuse'], grad_y_features], axis=-1),
+        'var_color': buffers['diffuseVariance'],
+        'var_features': var_features,
+    }
+    spec_in = {
+        'color': buffers['specular'],
+        'grad_x': np.concatenate([grad_x['specular'], grad_x_features], axis=-1),
+        'grad_y': np.concatenate([grad_y['specular'], grad_y_features], axis=-1),
+        'var_color': buffers['specularVariance'],
+        'var_features': var_features,
+    }
+
+    # add batch dim
+    for c, data in diff_in.items():
+        diff_in[c] = np.expand_dims(data, 0)
+    for c, data in spec_in.items():
+        spec_in[c] = np.expand_dims(data, 0)
+
+    return diff_in, spec_in
 
 def postprocess_diffuse(out_diffuse, albedo, eps):
     """Multiply back albedo."""
@@ -557,11 +607,9 @@ def show_multiple(*ims, **kwargs):
         plt.show()
 
     # Determine number of rows and columns
-    nrows, ncols = len(ims) // row_max, len(ims) % row_max
-    if ncols == 0:
-        ncols = row_max
-    else:
-        nrows += 1
+    assert len(ims) > 0
+    nrows = (len(ims) - 1) // row_max + 1
+    ncols = len(ims) % row_max if len(ims) < row_max else row_max
     base_nrows = nrows
     if len(ims[0].shape) == 4:
         nrows *= min(len(ims[0].shape), batch_max)
@@ -605,3 +653,33 @@ def get_run_dir(enclosing_dir):
     while os.path.isdir(os.path.join(enclosing_dir, 'run_%04d' % run_id)):
         run_id += 1
     return os.path.join(enclosing_dir, 'run_%04d' % run_id)
+
+# ===============================================
+# GENERAL
+# ===============================================
+
+DAY_FORMAT_STR  = '{d} days, {h} hours, {m} minutes, {s} seconds'
+HOUR_FORMAT_STR = '{h} hours, {m} minutes, {s} seconds'
+MIN_FORMAT_STR  = '{m} minutes, {s} seconds'
+SEC_FORMAT_STR  = '{s} seconds'
+
+def format_seconds(s):
+    """Converts S, a float representing some number of seconds,
+    into a string detailing DAYS, HOURS, MINUTES, and SECONDS.
+    """
+    s = int(s)
+    seconds = s % 60
+    minutes = s // 60
+    hours   = s // 3600
+    days    = s // 86400
+
+    if days > 0:
+        format_str = DAY_FORMAT_STR
+    elif hours > 0:
+        format_str = HOUR_FORMAT_STR
+    elif minutes > 0:
+        format_str = MIN_FORMAT_STR
+    else:
+        format_str = SEC_FORMAT_STR
+
+    return format_str.format(d=days, h=hours, m=minutes, s=seconds)
