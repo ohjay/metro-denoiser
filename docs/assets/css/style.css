@@ -274,9 +274,19 @@ footer {
   }
 }
 
+@media print, screen and (max-width: 507px) {
+  h1#title {
+    font-size: 1.95em;
+  }
+  h3#subtitle {
+    font-size: 1.17em;
+  }
+}
+
 @media print, screen and (max-width: 480px) {
   body {
-    padding: 15px;
+    padding-left: 15px;
+    padding-right: 15px;
   }
   header ul {
     width: 99%;
