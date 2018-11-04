@@ -64,6 +64,7 @@ class KPCN(object):
             self.learning_rate = tf.train.exponential_decay(learning_rate, self.global_step, 100000, 0.96)
             opt = tf.train.AdamOptimizer(self.learning_rate, epsilon=1e-4)  # eps: https://stackoverflow.com/a/42077538
             grads_and_vars = opt.compute_gradients(self.loss)
+            grads_and_vars = [(tf.clip_by_value(grad, -1.0, 1.0), var) for grad, var in grads_and_vars]
             self.opt_op = opt.apply_gradients(grads_and_vars, global_step=self.global_step)
 
             # logging
