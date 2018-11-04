@@ -235,7 +235,7 @@ def write_tfrecords(tfrecord_filepath, input_exr_files, gt_exr_files,
             print('[o] Collected %d examples for %s (%d/%d).'
                 % (len(patch_indices), input_id, i + 1, len(input_exr_files)))
             if (i + 1) % 10 == 0:
-                print('--- TIME ELAPSED: %s' % format_seconds(time.time() - start_time))
+                print('(time elapsed: %s)' % format_seconds(time.time() - start_time))
 
             if shuffle and len(all_examples) >= all_examples_size_limit:
                 shuffle_and_write()
@@ -464,10 +464,11 @@ def preprocess_specular(buffers):
 
 def preprocess_depth(buffers):
     """Scale depth to range [0, 1]. Destructive."""
-    _min = np.min(buffers['depth'])
-    _range = np.max(buffers['depth']) - _min
-    buffers['depth'] = (buffers['depth'] - _min) / _range
-    buffers['depthVariance'] /= _range ** 2
+    buffers['depth'] = np.maximum(buffers['depth'], 0.0)
+    _max = np.amax(buffers['depth'])
+    if _max > 0.0:
+        buffers['depth'] /= _max
+        buffers['depthVariance'] /= _max ** 2
 
 def compute_buffer_gradients(buffers):
     """
@@ -577,9 +578,13 @@ def tf_preprocess_specular_variance(specular, specular_variance):
     return tf.divide(specular_variance, tf.square(mean_specular) + 1e-5)
 
 def tf_preprocess_depth(depth, depth_variance):
-    _min = tf.reduce_min(depth)
-    _range = tf.reduce_max(depth) - _min
-    return tf.divide(depth - _min, _range), tf.divide(depth_variance, tf.square(_range))
+    depth = tf.maximum(depth, 0.0)
+    _max = tf.reduce_max(depth)
+    depth = tf.cond(tf.greater(_max, 0.0),
+        lambda: depth / _max, lambda: depth)
+    depth_variance = tf.cond(tf.greater(_max, 0.0),
+        lambda: depth_variance / tf.square(_max), lambda: depth_variance)
+    return depth, depth_variance
 
 def tf_postprocess_diffuse(out_diffuse, albedo, eps):
     return tf.multiply(out_diffuse, albedo + eps)
@@ -598,8 +603,8 @@ def show_multiple(*ims, **kwargs):
     Assumes that each image in IMS is either
     an [h, w, c]-array or an [n, h, w, c]-array.
     """
-    row_max = kwargs.get('row_max', 3)
-    batch_max = kwargs.get('batch_max', 5)  # viz at most 5 examples per batch
+    row_max      = kwargs.get('row_max', max(3, int(sqrt(len(ims))) + 1))
+    batch_max    = kwargs.get('batch_max', 5)  # viz at most 5 examples per batch
     block_on_viz = kwargs.get('block_on_viz', False)
 
     if not block_on_viz:
@@ -668,10 +673,9 @@ def format_seconds(s):
     into a string detailing DAYS, HOURS, MINUTES, and SECONDS.
     """
     s = int(s)
-    seconds = s % 60
-    minutes = s // 60
-    hours   = s // 3600
-    days    = s // 86400
+    days,    s = s // 86400, s % 86400
+    hours,   s = s // 3600,  s % 3600
+    minutes, s = s // 60,    s % 60
 
     if days > 0:
         format_str = DAY_FORMAT_STR
@@ -682,4 +686,4 @@ def format_seconds(s):
     else:
         format_str = SEC_FORMAT_STR
 
-    return format_str.format(d=days, h=hours, m=minutes, s=seconds)
+    return format_str.format(d=days, h=hours, m=minutes, s=s)
