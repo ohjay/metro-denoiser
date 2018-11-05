@@ -1,17 +1,17 @@
-op: train
+op: sample_data
 
 data:
   data_dir: /media/owen/302371f7-852e-4f78-94e6-4d3ffebda36e/deep_learning_denoising/renderings
   tfrecord_dir: /media/owen/302371f7-852e-4f78-94e6-4d3ffebda36e/renderings_tfrecords_partition
   scenes:
     - bathroom2
-    # - car2
-    # - classroom
-    # - house
-    # - room2
-    # - spaceship
-    # - staircase
-    # - room3
+    - car2
+    - classroom
+    - house
+    - room2
+    - spaceship
+    - staircase
+    - room3
   splits:
     train:      0.90
     validation: 0.05
@@ -21,9 +21,9 @@ data:
   parse_start: 0
   parse_step: 1
   parse_shuffle: True
-  file_example_limit: 500
+  file_example_limit: 300
   patch_size: 65
-  patches_per_im: 400
+  patches_per_im: 500
   save_debug_ims: True
   save_debug_ims_every: 10
   color_var_weight: 1.0
