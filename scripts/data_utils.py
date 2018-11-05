@@ -663,10 +663,10 @@ def get_run_dir(enclosing_dir):
 # GENERAL
 # ===============================================
 
-DAY_FORMAT_STR  = '{d} days, {h} hours, {m} minutes, {s} seconds'
-HOUR_FORMAT_STR = '{h} hours, {m} minutes, {s} seconds'
-MIN_FORMAT_STR  = '{m} minutes, {s} seconds'
-SEC_FORMAT_STR  = '{s} seconds'
+DAY_FORMAT_STR  = '{d} day(s), {h} hour(s), {m} minute(s), {s} second(s)'
+HOUR_FORMAT_STR = '{h} hour(s), {m} minute(s), {s} second(s)'
+MIN_FORMAT_STR  = '{m} minute(s), {s} second(s)'
+SEC_FORMAT_STR  = '{s} second(s)'
 
 def format_seconds(s):
     """Converts S, a float representing some number of seconds,
