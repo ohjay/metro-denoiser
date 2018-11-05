@@ -160,9 +160,9 @@ N_CHANNELS = {
 def _bytes_feature(value):
     return tf.train.Feature(bytes_list=tf.train.BytesList(value=[value]))
 
-def write_tfrecords(tfrecord_filepath, input_exr_files, gt_exr_files,
-                    patches_per_im, patch_size, fp16, shuffle=False, debug_dir='',
-                    save_debug_ims_every=1, color_var_weight=1.0, normal_var_weight=1.0):
+def write_tfrecords(tfrecord_filepath, input_exr_files, gt_exr_files, patches_per_im,
+                    patch_size, fp16, shuffle=False, debug_dir='', save_debug_ims_every=1,
+                    color_var_weight=1.0, normal_var_weight=1.0, file_example_limit=1e5):
     """Export PATCHES_PER_IM examples for each EXR file.
     Accepts two lists of EXR filepaths with corresponding orderings.
 
@@ -171,84 +171,82 @@ def write_tfrecords(tfrecord_filepath, input_exr_files, gt_exr_files,
     if debug_dir and not os.path.exists(debug_dir):
         os.makedirs(debug_dir)
 
-    with tf.python_io.TFRecordWriter(tfrecord_filepath) as writer:
-        all_examples = []
-        all_examples_size_limit = patches_per_im * 50  # essentially, shuffle buffer lim = 50 ims
+    file_idx = 0
+    example_buffer = []
 
-        def shuffle_and_write():
-            random.shuffle(all_examples)
-            for example in all_examples:
-                writer.write(example.SerializeToString())
-            print('[+] Wrote %d examples to TFRecord file `%s`.' % (len(all_examples), tfrecord_filepath))
-
-        i = 0
-        start_time = time.time()
-        for input_filepath, gt_filepath in zip(input_exr_files, gt_exr_files):
-            # for filename str printing
-            input_dirname = os.path.dirname(input_filepath)
-            input_basename = os.path.basename(input_filepath)
-            input_id = os.path.join(os.path.basename(input_dirname), input_basename)
-
-            input_buffers = read_exr(input_filepath, fp16=fp16)
-            input_buffers = stack_channels(input_buffers)
-            try:
-                _input_id  = input_basename[:input_basename.rfind('.')]
-                _debug_dir = debug_dir if i % save_debug_ims_every == 0 else ''
-                patch_indices = sample_patches(
-                    input_buffers, patches_per_im, patch_size, patch_size, _debug_dir, _input_id,
-                    color_var_weight=color_var_weight, normal_var_weight=normal_var_weight)
-            except ValueError as e:
-                print('[-] Invalid value during %s sampling. (%s)' % (input_id, str(e)))
-                continue
-
-            gt_buffers = read_exr(gt_filepath, fp16=fp16)
-            gt_buffers = stack_channels(gt_buffers)
-
-            # One example per patch
-            r = patch_size // 2
-            for y, x in patch_indices:
-                feature = {
-                    'diffuse':          input_buffers['diffuse'][y-r:y+r+1, x-r:x+r+1, :],
-                    'diffuseVariance':  input_buffers['diffuseVariance'][y-r:y+r+1, x-r:x+r+1, :],
-                    'specular':         input_buffers['specular'][y-r:y+r+1, x-r:x+r+1, :],
-                    'specularVariance': input_buffers['specularVariance'][y-r:y+r+1, x-r:x+r+1, :],
-                    'albedo':           input_buffers['albedo'][y-r:y+r+1, x-r:x+r+1, :],
-                    'albedoVariance':   input_buffers['albedoVariance'][y-r:y+r+1, x-r:x+r+1, :],
-                    'normal':           input_buffers['normal'][y-r:y+r+1, x-r:x+r+1, :],
-                    'normalVariance':   input_buffers['normalVariance'][y-r:y+r+1, x-r:x+r+1, :],
-                    'depth':            input_buffers['depth'][y-r:y+r+1, x-r:x+r+1, :],
-                    'depthVariance':    input_buffers['depthVariance'][y-r:y+r+1, x-r:x+r+1, :],
-                    'gt_diffuse':       gt_buffers['diffuse'][y-r:y+r+1, x-r:x+r+1, :],
-                    'gt_specular':      gt_buffers['specular'][y-r:y+r+1, x-r:x+r+1, :],
-                    'gt_albedo':        gt_buffers['albedo'][y-r:y+r+1, x-r:x+r+1, :],
-                }
-                for c, data in feature.items():
-                    if fp16:
-                        feature[c] = _bytes_feature(data.tobytes())
-                    else:
-                        feature[c] = _bytes_feature(tf.compat.as_bytes(data.tostring()))
-                example = tf.train.Example(features=tf.train.Features(feature=feature))
-                if shuffle:
-                    all_examples.append(example)
-                else:
-                    writer.write(example.SerializeToString())
-            print('[o] Collected %d examples for %s (%d/%d).'
-                % (len(patch_indices), input_id, i + 1, len(input_exr_files)))
-            if (i + 1) % 10 == 0:
-                print('(time elapsed: %s)' % format_seconds(time.time() - start_time))
-
-            if shuffle and len(all_examples) >= all_examples_size_limit:
-                shuffle_and_write()
-                del all_examples[:]
-
-            i += 1
-
-        # (final) shuffle
+    def write_example_buffer():
         if shuffle:
-            if len(all_examples) > 0:
-                shuffle_and_write()
-        else:
-            print('[+] Wrote examples to TFRecord file `%s`.' % tfrecord_filepath)
+            random.shuffle(example_buffer)
+        curr_filepath = tfrecord_filepath % file_idx
+        num_to_write  = min(file_example_limit, len(example_buffer))
+        with tf.python_io.TFRecordWriter(curr_filepath) as writer:
+            for example in example_buffer[:num_to_write]:
+                writer.write(example.SerializeToString())
+        print('[+] Wrote %d examples to TFRecord file `%s`.' % (num_to_write, curr_filepath))
+        del example_buffer[:num_to_write]
+        return file_idx + 1  # return next file index
+
+    i = 0
+    start_time = time.time()
+    for input_filepath, gt_filepath in zip(input_exr_files, gt_exr_files):
+        # for filename str printing
+        input_dirname = os.path.dirname(input_filepath)
+        input_basename = os.path.basename(input_filepath)
+        input_id = os.path.join(os.path.basename(input_dirname), input_basename)
+
+        input_buffers = read_exr(input_filepath, fp16=fp16)
+        input_buffers = stack_channels(input_buffers)
+        try:
+            _input_id  = input_basename[:input_basename.rfind('.')]
+            _debug_dir = debug_dir if i % save_debug_ims_every == 0 else ''
+            patch_indices = sample_patches(
+                input_buffers, patches_per_im, patch_size, patch_size, _debug_dir, _input_id,
+                color_var_weight=color_var_weight, normal_var_weight=normal_var_weight)
+        except ValueError as e:
+            print('[-] Invalid value during %s sampling. (%s)' % (input_id, str(e)))
+            continue
+
+        gt_buffers = read_exr(gt_filepath, fp16=fp16)
+        gt_buffers = stack_channels(gt_buffers)
+
+        # One example per patch
+        r = patch_size // 2
+        for y, x in patch_indices:
+            feature = {
+                'diffuse':          input_buffers['diffuse'][y-r:y+r+1, x-r:x+r+1, :],
+                'diffuseVariance':  input_buffers['diffuseVariance'][y-r:y+r+1, x-r:x+r+1, :],
+                'specular':         input_buffers['specular'][y-r:y+r+1, x-r:x+r+1, :],
+                'specularVariance': input_buffers['specularVariance'][y-r:y+r+1, x-r:x+r+1, :],
+                'albedo':           input_buffers['albedo'][y-r:y+r+1, x-r:x+r+1, :],
+                'albedoVariance':   input_buffers['albedoVariance'][y-r:y+r+1, x-r:x+r+1, :],
+                'normal':           input_buffers['normal'][y-r:y+r+1, x-r:x+r+1, :],
+                'normalVariance':   input_buffers['normalVariance'][y-r:y+r+1, x-r:x+r+1, :],
+                'depth':            input_buffers['depth'][y-r:y+r+1, x-r:x+r+1, :],
+                'depthVariance':    input_buffers['depthVariance'][y-r:y+r+1, x-r:x+r+1, :],
+                'gt_diffuse':       gt_buffers['diffuse'][y-r:y+r+1, x-r:x+r+1, :],
+                'gt_specular':      gt_buffers['specular'][y-r:y+r+1, x-r:x+r+1, :],
+                'gt_albedo':        gt_buffers['albedo'][y-r:y+r+1, x-r:x+r+1, :],
+            }
+            for c, data in feature.items():
+                if fp16:
+                    feature[c] = _bytes_feature(data.tobytes())
+                else:
+                    feature[c] = _bytes_feature(tf.compat.as_bytes(data.tostring()))
+            example = tf.train.Example(features=tf.train.Features(feature=feature))
+            example_buffer.append(example)
+        print('[o] Collected %d examples for %s (%d/%d).'
+            % (len(patch_indices), input_id, i + 1, len(input_exr_files)))
+        if (i + 1) % 10 == 0:
+            print('(time elapsed: %s)' % format_seconds(time.time() - start_time))
+
+        if len(example_buffer) >= file_example_limit:
+            file_idx = write_example_buffer()
+
+        i += 1
+
+    # (final) write
+    if len(example_buffer) > 0:
+        write_example_buffer()
 
 def make_decode(is_diffuse, tf_dtype, buffer_h, buffer_w, eps, clip_ims):
 

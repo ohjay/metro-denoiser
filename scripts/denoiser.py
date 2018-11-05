@@ -151,26 +151,37 @@ class Denoiser(object):
                     log_freq, save_freq, viz_freq, max_epochs, spec_checkpoint_dir, block_on_viz, spec_restore_path, reset_lr)
 
     def load_data(self, config, shuffle=True):
-        batch_size   = config['train_params'].get('batch_size', 5)
-        patch_size   = config['data'].get('patch_size', 65)
-        tfrecord_dir = config['data']['tfrecord_dir']
-        scenes       = config['data']['scenes']
-        clip_ims     = config['data']['clip_ims']
+        batch_size        = config['train_params'].get('batch_size', 5)
+        patch_size        = config['data'].get('patch_size', 65)
+        tfrecord_dir      = config['data']['tfrecord_dir']
+        scenes            = config['data']['scenes']
+        clip_ims          = config['data']['clip_ims']
+        shuffle_filenames = config['data']['shuffle_filenames']
 
-        train_filenames = [
-            os.path.join(tfrecord_dir, scene, 'train', 'data.tfrecords') for scene in scenes]
-        val_filenames = [
-            os.path.join(tfrecord_dir, scene, 'validation', 'data.tfrecords') for scene in scenes]
+        train_filenames = []
+        val_filenames   = []
+        for scene in scenes:
+            train_filenames.extend(glob.glob(os.path.join(tfrecord_dir, scene, 'train', 'data*.tfrecords')))
+            val_filenames.extend(glob.glob(os.path.join(tfrecord_dir, scene, 'validation', 'data*.tfrecords')))
+
+        def shuffled_dataset(filenames):
+            dataset = tf.data.Dataset.from_tensor_slices(filenames)
+            dataset = dataset.shuffle(len(filenames))
+            return dataset.interleave(tf.data.TFRecordDataset, cycle_length=len(filenames))  # might have to lower cycle length
 
         with tf.device('/cpu:0'):
-            train_dataset = tf.data.TFRecordDataset(train_filenames)
-            val_dataset   = tf.data.TFRecordDataset(val_filenames)
+            if shuffle_filenames:
+                train_dataset = shuffled_dataset(train_filenames)
+                val_dataset   = shuffled_dataset(val_filenames)
+            else:
+                train_dataset = tf.data.TFRecordDataset(train_filenames)
+                val_dataset   = tf.data.TFRecordDataset(val_filenames)
 
             pstep = config['data'].get('parse_step', 1)
             patches_per_im = config['data'].get('patches_per_im', 400)
             train_dataset_size_estimate = (int(200 / pstep) * patches_per_im) * len(train_filenames)
             val_dataset_size_estimate   = (int(200 / pstep) * patches_per_im) * len(val_filenames)
-            size_lim = config['data'].get('shuffle_buffer_size_limit', 80000)
+            size_lim = config['data'].get('shuffle_buffer_size_limit', 50000)
 
             decode_diff = du.make_decode(True, self.tf_dtype, patch_size, patch_size, self.eps, clip_ims)
             decode_spec = du.make_decode(False, self.tf_dtype, patch_size, patch_size, self.eps, clip_ims)
@@ -244,6 +255,7 @@ class Denoiser(object):
         save_debug_ims_every = config['data'].get('save_debug_ims_every', 1)
         color_var_weight     = config['data'].get('color_var_weight', 1.0)
         normal_var_weight    = config['data'].get('normal_var_weight', 1.0)
+        file_example_limit   = config['data'].get('file_example_limit', 1e5)
 
         for scene in scenes:
             input_exr_files = sorted(glob.glob(os.path.join(data_dir, scene, in_filename)))
@@ -270,22 +282,16 @@ class Denoiser(object):
                 if end - start == 0:
                     continue
 
-                _in_files = input_exr_files[start:end]
-                _gt_files = gt_exr_files[start:end]
-                if pshuffle:
-                    _in_gt_paired = list(zip(_in_files, _gt_files))
-                    random.shuffle(_in_gt_paired)
-                    _in_files, gt_files = zip(*_in_gt_paired)
-
                 tfrecord_scene_split_dir = os.path.join(tfrecord_scene_dir, split)
                 if not os.path.exists(tfrecord_scene_split_dir):
                     os.makedirs(tfrecord_scene_split_dir)
-                tfrecord_filepath = os.path.join(tfrecord_scene_split_dir, 'data.tfrecords')
+                tfrecord_filepath = os.path.join(tfrecord_scene_split_dir, 'data%d.tfrecords')
                 debug_dir = tfrecord_scene_split_dir if save_debug_ims else ''
                 du.write_tfrecords(
-                    tfrecord_filepath, _in_files, _gt_files, patches_per_im, patch_size, self.fp16,
-                    shuffle=pshuffle, debug_dir=debug_dir, save_debug_ims_every=save_debug_ims_every,
-                    color_var_weight=color_var_weight, normal_var_weight=normal_var_weight)
+                    tfrecord_filepath, input_exr_files[start:end], gt_exr_files[start:end],
+                    patches_per_im, patch_size, self.fp16, shuffle=pshuffle, debug_dir=debug_dir,
+                    save_debug_ims_every=save_debug_ims_every, color_var_weight=color_var_weight,
+                    normal_var_weight=normal_var_weight, file_example_limit=file_example_limit)
 
     def visualize_data(self, config):
         """Visualize sampled data stored in the TFRecord files."""
