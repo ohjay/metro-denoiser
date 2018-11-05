@@ -239,13 +239,13 @@ def write_tfrecords(tfrecord_filepath, input_exr_files, gt_exr_files, patches_pe
         if (i + 1) % 10 == 0:
             print('(time elapsed: %s)' % format_seconds(time.time() - start_time))
 
-        if len(example_buffer) >= file_example_limit:
+        while len(example_buffer) >= file_example_limit:
             file_idx = write_example_buffer()
 
         i += 1
 
     # (final) write
-    if len(example_buffer) > 0:
+    while len(example_buffer) > 0:
         write_example_buffer()
 
 def make_decode(is_diffuse, tf_dtype, buffer_h, buffer_w, eps, clip_ims):
