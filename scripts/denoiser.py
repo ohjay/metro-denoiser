@@ -167,7 +167,7 @@ class Denoiser(object):
         def shuffled_dataset(filenames):
             dataset = tf.data.Dataset.from_tensor_slices(filenames)
             dataset = dataset.shuffle(len(filenames))
-            return dataset.interleave(tf.data.TFRecordDataset, cycle_length=len(filenames))  # might have to lower cycle length
+            return dataset.interleave(tf.data.TFRecordDataset, cycle_length=min(750, len(filenames)))
 
         with tf.device('/cpu:0'):
             if shuffle_filenames:
@@ -196,11 +196,9 @@ class Denoiser(object):
                     dataset_size = min(train_dataset_size_estimate, size_lim)
                 else:
                     dataset_size = min(val_dataset_size_estimate, size_lim)
-                datasets[comp] = datasets[comp].cache()
                 if shuffle:
                     datasets[comp] = datasets[comp].shuffle(dataset_size)
                 datasets[comp] = datasets[comp].batch(batch_size)
-                datasets[comp] = datasets[comp].prefetch(1)
 
             # shared iterator
             iterator = tf.data.Iterator.from_structure(

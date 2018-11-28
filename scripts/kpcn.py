@@ -2,7 +2,7 @@ import os
 from math import sqrt
 import tensorflow as tf
 
-from data_utils import get_run_dir
+from data_utils import get_run_dir, tf_center_crop
 
 class KPCN(object):
     """
@@ -16,6 +16,8 @@ class KPCN(object):
     def __init__(self, tf_buffers, buffer_h, buffer_w, layers_config,
                  is_training, learning_rate, summary_dir, scope=None):
 
+        self.buffer_h = buffer_h
+        self.buffer_w = buffer_w
         self.is_training = is_training
 
         if scope is None:
@@ -42,20 +44,26 @@ class KPCN(object):
                     except AttributeError:
                         activation = None
                     if layer['type'] == 'conv2d':
+                        padding = 'valid' if self.is_training else 'same'
                         out = tf.layers.conv2d(
                             out, layer['num_outputs'], layer['kernel_size'],
-                            strides=layer['stride'], padding=layer['padding'], activation=activation, name='conv2d')
+                            strides=layer['stride'], padding=padding, activation=activation, name='conv2d')
                     elif layer['type'] == 'batch_normalization':
                         out = tf.layers.batch_normalization(out, training=self.is_training, name='batch_normalization')
                     else:
                         raise ValueError('unsupported KPCN layer type')
 
-            self.out_kernels = tf.nn.softmax(out, axis=-1)
             self.kernel_size = int(sqrt(layer['num_outputs']))
+            out_max =  tf.reduce_max(out, axis=-1, keepdims=True)
+            self.out_kernels = tf.nn.softmax(out - out_max, axis=-1)
+            _, self.valid_h, self.valid_w, _ = self.out_kernels.get_shape().as_list()
             self.out = self._filter(self.color, self.out_kernels)  # filtered color buffer
 
             # loss
-            self.gt_out = tf.identity(tf_buffers['gt_out'], name='gt_out')  # (?, h, w, 3)
+            gt_out = tf_buffers['gt_out']
+            if self.is_training:
+                gt_out = tf_center_crop(gt_out, self.valid_h, self.valid_w)
+            self.gt_out = tf.identity(gt_out, name='gt_out')  # (?, h, w, 3)
             self.loss = tf.reduce_mean(tf.abs(self.out - self.gt_out), name='l1_loss')
             self.loss_summary = tf.summary.scalar('loss', self.loss)
 
@@ -79,10 +87,15 @@ class KPCN(object):
         # `color`   : (?, h, w, 3)
         # `kernels` : (?, h, w, kernel_size * kernel_size)
 
-        # zero-pad color buffer
-        kernel_radius = self.kernel_size // 2
-        color = tf.pad(color, [
-            [0, 0], [kernel_radius, kernel_radius], [kernel_radius, kernel_radius], [0, 0]])
+        if self.is_training:
+            y_extent = self.valid_h + self.kernel_size - 1
+            x_extent = self.valid_w + self.kernel_size - 1
+            color = tf_center_crop(color, y_extent, x_extent)
+        else:
+            # zero-pad color buffer
+            kernel_radius = self.kernel_size // 2
+            color = tf.pad(color, [
+                [0, 0], [kernel_radius, kernel_radius], [kernel_radius, kernel_radius], [0, 0]])
 
         # filter channels separately
         filtered_channels = []

@@ -590,6 +590,14 @@ def tf_postprocess_diffuse(out_diffuse, albedo, eps):
 def tf_postprocess_specular(out_specular):
     return tf.exp(out_specular) - 1.0
 
+def tf_center_crop(im, y_extent, x_extent):
+    _, im_h, im_w, _ = im.get_shape().as_list()
+    y0 = im_h // 2 - y_extent // 2      # [
+    y1 = im_h // 2 + y_extent // 2 + 1  # )
+    x0 = im_w // 2 - x_extent // 2      # [
+    x1 = im_w // 2 + x_extent // 2 + 1  # )
+    return im[:, y0:y1, x0:x1, :]
+
 # ===============================================
 # VISUALIZATION
 # ===============================================
