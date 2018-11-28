@@ -4,10 +4,12 @@ import tensorflow as tf
 
 from data_utils import get_run_dir, tf_center_crop
 
-class KPCN(object):
+class DKPCN(object):
     """
-    Kernel-predicting convolutional network,
-    as described in Bako et al. 2017.
+    Reconstruction network.
+
+    - Direct prediction convolutional network, or
+    - Kernel-predicting convolutional network, as described in Bako et al. 2017.
 
     The same graph definition is used for both the diffuse and specular networks.
     """
@@ -21,8 +23,8 @@ class KPCN(object):
         self.is_training = is_training
 
         if scope is None:
-            KPCN.curr_index += 1
-        self.scope = scope or 'KPCN_%d' % KPCN.curr_index
+            DKPCN.curr_index += 1
+        self.scope = scope or 'DKPCN_%d' % DKPCN.curr_index
         with tf.variable_scope(self.scope, reuse=False):
             with tf.variable_scope('inputs'):
                 # color buffer
@@ -51,13 +53,21 @@ class KPCN(object):
                     elif layer['type'] == 'batch_normalization':
                         out = tf.layers.batch_normalization(out, training=self.is_training, name='batch_normalization')
                     else:
-                        raise ValueError('unsupported KPCN layer type')
+                        raise ValueError('unsupported DKPCN layer type')
 
-            self.kernel_size = int(sqrt(layer['num_outputs']))
-            out_max =  tf.reduce_max(out, axis=-1, keepdims=True)
-            self.out_kernels = tf.nn.softmax(out - out_max, axis=-1)
-            _, self.valid_h, self.valid_w, _ = self.out_kernels.get_shape().as_list()
-            self.out = self._filter(self.color, self.out_kernels)  # filtered color buffer
+            if layer['num_outputs'] == 3:
+                # DPCN
+                self.kernel_size = None
+                self.out_kernels = None
+                _, self.valid_h, self.valid_w, _ = out.get_shape().as_list()
+                self.out = out
+            else:
+                # KPCN
+                self.kernel_size = int(sqrt(layer['num_outputs']))
+                out_max =  tf.reduce_max(out, axis=-1, keepdims=True)
+                self.out_kernels = tf.nn.softmax(out - out_max, axis=-1)
+                _, self.valid_h, self.valid_w, _ = self.out_kernels.get_shape().as_list()
+                self.out = self._filter(self.color, self.out_kernels)  # filtered color buffer
 
             # loss
             gt_out = tf_buffers['gt_out']
@@ -141,4 +151,4 @@ class KPCN(object):
     def restore(self, sess, restore_path):
         saver = tf.train.Saver(tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope=self.scope))
         saver.restore(sess, restore_path)
-        print('[+] `%s` KPCN restored from `%s`.' % (self.scope, restore_path))
+        print('[+] `%s` network restored from `%s`.' % (self.scope, restore_path))

@@ -12,7 +12,7 @@ from math import sqrt
 import tensorflow as tf
 from scipy.misc import imsave
 
-from kpcn import KPCN
+from kpcn import DKPCN
 import data_utils as du
 
 class Denoiser(object):
@@ -134,7 +134,7 @@ class Denoiser(object):
                 diff_checkpoint_dir = os.path.join(checkpoint_dir, 'diff')
                 diff_restore_path   = config['kpcn']['diff'].get('restore_path', '')
 
-                self.diff_kpcn = KPCN(
+                self.diff_kpcn = DKPCN(
                     tf_buffers, patch_size, patch_size, layers_config,
                     is_training, learning_rate, summary_dir, scope='diffuse')
                 self._training_loop(sess, self.diff_kpcn, init_ops['diff_train'], init_ops['diff_val'], 'diff',
@@ -144,7 +144,7 @@ class Denoiser(object):
                 spec_checkpoint_dir = os.path.join(checkpoint_dir, 'spec')
                 spec_restore_path   = config['kpcn']['spec'].get('restore_path', '')
 
-                self.spec_kpcn = KPCN(
+                self.spec_kpcn = DKPCN(
                     tf_buffers, patch_size, patch_size, layers_config,
                     is_training, learning_rate, summary_dir, scope='specular')
                 self._training_loop(sess, self.spec_kpcn, init_ops['spec_train'], init_ops['spec_val'], 'spec',
@@ -368,10 +368,10 @@ class Denoiser(object):
             'var_features': tf.placeholder(self.tf_dtype, shape=(None, h, w // 2 + ks, 3)),
             'gt_out':       tf.placeholder(self.tf_dtype, shape=(None, h, w // 2 + ks, 3)),  # not used
         }
-        self.diff_kpcn = KPCN(
+        self.diff_kpcn = DKPCN(
             tf_placeholders, patch_size, patch_size, layers_config,
             is_training, learning_rate, summary_dir, scope='diffuse')
-        self.spec_kpcn = KPCN(
+        self.spec_kpcn = DKPCN(
             tf_placeholders, patch_size, patch_size, layers_config,
             is_training, learning_rate, summary_dir, scope='specular')
 
