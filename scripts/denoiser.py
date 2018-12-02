@@ -12,7 +12,7 @@ from math import sqrt
 import tensorflow as tf
 from scipy.misc import imsave
 
-from kpcn import DKPCN
+from kpcn import DKPCN, CombinedModel
 import data_utils as du
 
 class Denoiser(object):
@@ -34,8 +34,7 @@ class Denoiser(object):
         # initialize/restore
         sess.run(tf.group(
             tf.global_variables_initializer(), tf.local_variables_initializer()))
-        if os.path.isfile(restore_path + '.index'):
-            kpcn.restore(sess, restore_path)
+        kpcn.restore(sess, restore_path)
         if reset_lr:
             sess.run(kpcn.global_step.assign(0))  # reset learning rate
 
@@ -118,39 +117,54 @@ class Denoiser(object):
         block_on_viz   = config['train_params'].get('block_on_viz', False)
         reset_lr       = config['train_params'].get('reset_lr', True)
 
+        train_diff     = config['kpcn']['diff']['train_include']
+        train_spec     = config['kpcn']['spec']['train_include']
+
         if type(learning_rate) == str:
             learning_rate = eval(learning_rate)
         if type(max_epochs) == str:
             max_epochs = int(eval(max_epochs))
 
         # load data
-        tf_buffers, init_ops = self.load_data(config)
+        comb = train_diff and train_spec
+        tf_buffers, init_ops = self.load_data(config, comb=comb)
 
         tf_config = tf.ConfigProto(
             device_count={'GPU': 1}, allow_soft_placement=True)
         with tf.Session(config=tf_config) as sess:
             # training loops
-            if config['kpcn']['diff']['train_include']:
+
+            if train_diff:
                 diff_checkpoint_dir = os.path.join(checkpoint_dir, 'diff')
                 diff_restore_path   = config['kpcn']['diff'].get('restore_path', '')
-
+                _tf_buffers = tf_buffers['diff'] if comb else tf_buffers
                 self.diff_kpcn = DKPCN(
-                    tf_buffers, patch_size, patch_size, layers_config,
+                    _tf_buffers, patch_size, patch_size, layers_config,
                     is_training, learning_rate, summary_dir, scope='diffuse')
-                self._training_loop(sess, self.diff_kpcn, init_ops['diff_train'], init_ops['diff_val'], 'diff',
-                    log_freq, save_freq, viz_freq, max_epochs, diff_checkpoint_dir, block_on_viz, diff_restore_path, reset_lr)
 
-            if config['kpcn']['spec']['train_include']:
+            if train_spec:
                 spec_checkpoint_dir = os.path.join(checkpoint_dir, 'spec')
                 spec_restore_path   = config['kpcn']['spec'].get('restore_path', '')
-
+                _tf_buffers = tf_buffers['spec'] if comb else tf_buffers
                 self.spec_kpcn = DKPCN(
-                    tf_buffers, patch_size, patch_size, layers_config,
+                    _tf_buffers, patch_size, patch_size, layers_config,
                     is_training, learning_rate, summary_dir, scope='specular')
+
+            if comb:
+                self.comb_kpcn      = CombinedModel(
+                    self.diff_kpcn, self.spec_kpcn, tf_buffers['comb'], self.eps, learning_rate, summary_dir)
+                comb_checkpoint_dir = os.path.join(checkpoint_dir, 'comb')
+                restore_path        = (diff_restore_path, spec_restore_path)
+                self._training_loop(sess, self.comb_kpcn, init_ops['comb_train'], init_ops['comb_val'], 'comb',
+                    log_freq, save_freq, viz_freq, max_epochs, comb_checkpoint_dir, block_on_viz, restore_path, reset_lr)
+            elif train_diff:
+                self._training_loop(sess, self.diff_kpcn, init_ops['diff_train'], init_ops['diff_val'], 'diff',
+                    log_freq, save_freq, viz_freq, max_epochs, diff_checkpoint_dir, block_on_viz, diff_restore_path, reset_lr)
+            elif train_spec:
                 self._training_loop(sess, self.spec_kpcn, init_ops['spec_train'], init_ops['spec_val'], 'spec',
                     log_freq, save_freq, viz_freq, max_epochs, spec_checkpoint_dir, block_on_viz, spec_restore_path, reset_lr)
 
-    def load_data(self, config, shuffle=True):
+    def load_data(self, config, shuffle=True, comb=False):
         batch_size        = config['train_params'].get('batch_size', 5)
         patch_size        = config['data'].get('patch_size', 65)
         tfrecord_dir      = config['data']['tfrecord_dir']
@@ -183,14 +197,21 @@ class Denoiser(object):
             val_dataset_size_estimate   = (int(200 / pstep) * patches_per_im) * len(val_filenames)
             size_lim = config['data'].get('shuffle_buffer_size_limit', 50000)
 
-            decode_diff = du.make_decode(True, self.tf_dtype, patch_size, patch_size, self.eps, clip_ims)
-            decode_spec = du.make_decode(False, self.tf_dtype, patch_size, patch_size, self.eps, clip_ims)
-            datasets = {
-                'diff_train': train_dataset.map(decode_diff, num_parallel_calls=4),
-                'spec_train': train_dataset.map(decode_spec, num_parallel_calls=4),
-                'diff_val': val_dataset.map(decode_diff, num_parallel_calls=4),
-                'spec_val': val_dataset.map(decode_spec, num_parallel_calls=4),
-            }
+            if comb:
+                decode_comb = du.make_decode('comb', self.tf_dtype, patch_size, patch_size, self.eps, clip_ims)
+                datasets = {
+                    'comb_train': train_dataset.map(decode_comb, num_parallel_calls=4),
+                    'comb_val': val_dataset.map(decode_comb, num_parallel_calls=4),
+                }
+            else:
+                decode_diff = du.make_decode('diff', self.tf_dtype, patch_size, patch_size, self.eps, clip_ims)
+                decode_spec = du.make_decode('spec', self.tf_dtype, patch_size, patch_size, self.eps, clip_ims)
+                datasets = {
+                    'diff_train': train_dataset.map(decode_diff, num_parallel_calls=4),
+                    'spec_train': train_dataset.map(decode_spec, num_parallel_calls=4),
+                    'diff_val': val_dataset.map(decode_diff, num_parallel_calls=4),
+                    'spec_val': val_dataset.map(decode_spec, num_parallel_calls=4),
+                }
             for comp in datasets:
                 if comp.endswith('train'):
                     dataset_size = min(train_dataset_size_estimate, size_lim)
@@ -202,38 +223,88 @@ class Denoiser(object):
 
             # shared iterator
             iterator = tf.data.Iterator.from_structure(
-                datasets['diff_train'].output_types, datasets['diff_train'].output_shapes)
-            color, normal, albedo, depth, var_color, var_features, gt_out = iterator.get_next()
+                datasets.values()[0].output_types, datasets.values()[0].output_shapes)
+            if comb:
+                diff, spec, normal, albedo, depth, var_diff, var_spec, \
+                    var_features, gt_diff, gt_spec, gt_out = iterator.get_next()
 
-            # initializers
-            diff_train_init_op = iterator.make_initializer(datasets['diff_train'])
-            spec_train_init_op = iterator.make_initializer(datasets['spec_train'])
-            diff_val_init_op   = iterator.make_initializer(datasets['diff_val'])
-            spec_val_init_op   = iterator.make_initializer(datasets['spec_val'])
+                # initializers
+                comb_train_init_op = iterator.make_initializer(datasets['comb_train'])
+                comb_val_init_op   = iterator.make_initializer(datasets['comb_val'])
 
-            # compute gradients
-            grad_y_color, grad_x_color = tf.image.image_gradients(color)
-            grad_y_normal, grad_x_normal = tf.image.image_gradients(normal)
-            grad_y_albedo, grad_x_albedo = tf.image.image_gradients(albedo)
-            grad_y_depth, grad_x_depth = tf.image.image_gradients(depth)
+                # compute gradients
+                grad = []
+                grad_y_normal, grad_x_normal = tf.image.image_gradients(normal)
+                grad_y_albedo, grad_x_albedo = tf.image.image_gradients(albedo)
+                grad_y_depth, grad_x_depth = tf.image.image_gradients(depth)
+                for color in (diff, spec):
+                    grad_y_color, grad_x_color = tf.image.image_gradients(color)
+                    grad_y = tf.concat([grad_y_color, grad_y_normal, grad_y_albedo, grad_y_depth], -1)
+                    grad_x = tf.concat([grad_x_color, grad_x_normal, grad_x_albedo, grad_x_depth], -1)
+                    grad.append({'grad_y': grad_y, 'grad_x': grad_x})
 
-            grad_y = tf.concat([grad_y_color, grad_y_normal, grad_y_albedo, grad_y_depth], -1)
-            grad_x = tf.concat([grad_x_color, grad_x_normal, grad_x_albedo, grad_x_depth], -1)
+                tf_buffers_diff = {
+                    'color': diff,
+                    'grad_x': grad[0]['grad_x'],
+                    'grad_y': grad[0]['grad_y'],
+                    'var_color': var_diff,
+                    'var_features': var_features,
+                    'gt_out': gt_diff,
+                }
+                tf_buffers_spec = {
+                    'color': spec,
+                    'grad_x': grad[1]['grad_x'],
+                    'grad_y': grad[1]['grad_y'],
+                    'var_color': var_spec,
+                    'var_features': var_features,
+                    'gt_out': gt_spec,
+                }
+                tf_buffers_comb = {
+                    'albedo': albedo,
+                    'gt_out': gt_out,
+                }
+                tf_buffers = {
+                    'diff': tf_buffers_diff,
+                    'spec': tf_buffers_spec,
+                    'comb': tf_buffers_comb,
+                }
+                init_ops = {
+                    'comb_train': comb_train_init_op,
+                    'comb_val': comb_val_init_op,
+                }
+            else:
+                color, normal, albedo, depth, var_color, var_features, gt_out = iterator.get_next()
 
-        tf_buffers = {
-            'color': color,
-            'grad_x': grad_x,
-            'grad_y': grad_y,
-            'var_color': var_color,
-            'var_features': var_features,
-            'gt_out': gt_out,
-        }
-        init_ops = {
-            'diff_train': diff_train_init_op,
-            'spec_train': spec_train_init_op,
-            'diff_val': diff_val_init_op,
-            'spec_val': spec_val_init_op,
-        }
+                # initializers
+                diff_train_init_op = iterator.make_initializer(datasets['diff_train'])
+                spec_train_init_op = iterator.make_initializer(datasets['spec_train'])
+                diff_val_init_op   = iterator.make_initializer(datasets['diff_val'])
+                spec_val_init_op   = iterator.make_initializer(datasets['spec_val'])
+
+                # compute gradients
+                grad_y_color, grad_x_color = tf.image.image_gradients(color)
+                grad_y_normal, grad_x_normal = tf.image.image_gradients(normal)
+                grad_y_albedo, grad_x_albedo = tf.image.image_gradients(albedo)
+                grad_y_depth, grad_x_depth = tf.image.image_gradients(depth)
+
+                grad_y = tf.concat([grad_y_color, grad_y_normal, grad_y_albedo, grad_y_depth], -1)
+                grad_x = tf.concat([grad_x_color, grad_x_normal, grad_x_albedo, grad_x_depth], -1)
+
+                tf_buffers = {
+                    'color': color,
+                    'grad_x': grad_x,
+                    'grad_y': grad_y,
+                    'var_color': var_color,
+                    'var_features': var_features,
+                    'gt_out': gt_out,
+                }
+                init_ops = {
+                    'diff_train': diff_train_init_op,
+                    'spec_train': spec_train_init_op,
+                    'diff_val': diff_val_init_op,
+                    'spec_val': spec_val_init_op,
+                }
+
         return tf_buffers, init_ops
 
     def sample_data(self, config):

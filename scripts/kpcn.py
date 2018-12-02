@@ -3,6 +3,7 @@ from math import sqrt
 import tensorflow as tf
 
 from data_utils import get_run_dir, tf_center_crop
+from data_utils import tf_postprocess_diffuse, tf_postprocess_specular
 
 class DKPCN(object):
     """
@@ -148,7 +149,113 @@ class DKPCN(object):
         saver.save(sess, base_filepath, global_step=iteration, write_meta_graph=write_meta_graph)
         print('[+] Saved current parameters to %s-%d.' % (base_filepath, iteration))
 
-    def restore(self, sess, restore_path):
-        saver = tf.train.Saver(tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope=self.scope))
+    @staticmethod
+    def _optimistic_restore(sess, restore_path):
+        """Source: https://github.com/tensorflow/tensorflow/issues/312."""
+        reader = tf.train.NewCheckpointReader(restore_path)
+        saved_shapes = reader.get_variable_to_shape_map()
+        var_names = sorted([(var.name, var.name.split(':')[0])
+            for var in tf.global_variables() if var.name.split(':')[0] in saved_shapes])
+        restore_vars = []
+        name2var = dict(zip(map(lambda x: x.name.split(':')[0], 
+            tf.global_variables()), tf.global_variables()))
+        with tf.variable_scope('', reuse=True):
+            for var_name, saved_var_name in var_names:
+                curr_var = name2var[saved_var_name]
+                var_shape = curr_var.get_shape().as_list()
+                if var_shape == saved_shapes[saved_var_name]:
+                    restore_vars.append(curr_var)
+        saver = tf.train.Saver(restore_vars)
         saver.restore(sess, restore_path)
-        print('[+] `%s` network restored from `%s`.' % (self.scope, restore_path))
+
+    def restore(self, sess, restore_path, optimistic=False):
+        if os.path.isfile(restore_path + '.index'):
+            saver = tf.train.Saver(tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope=self.scope))
+            if optimistic:
+                self._optimistic_restore(sess, restore_path)  # ignore vars not in checkpoint
+            else:
+                saver.restore(sess, restore_path)
+            print('[+] `%s` network restored from `%s`.' % (self.scope, restore_path))
+
+class CombinedModel(object):
+    """Diffuse + specular KPCNs."""
+    def __init__(self, diff_kpcn, spec_kpcn, tf_buffers_comb, eps, learning_rate, summary_dir):
+        self.diff_kpcn = diff_kpcn
+        self.spec_kpcn = spec_kpcn
+
+        # _dt = tf.float32
+        # _bh = self.diff_kpcn.buffer_h
+        # _bw = self.diff_kpcn.buffer_w
+        # self.albedo = tf.placeholder(_dt, shape=(None, _bh, _bw, 3), name='albedo')
+        # self.gt_out = tf.placeholder(_dt, shape=(None, _bh, _bw, 3), name='gt_out')
+        self.albedo = tf_buffers_comb['albedo']
+        self.gt_out = tf_buffers_comb['gt_out']
+
+        if self.diff_kpcn.is_training:
+            self.albedo = tf_center_crop(self.albedo, self.diff_kpcn.valid_h, self.diff_kpcn.valid_w)
+            self.gt_out = tf_center_crop(self.gt_out, self.diff_kpcn.valid_h, self.diff_kpcn.valid_w)
+
+        diff_out = tf_postprocess_diffuse(self.diff_kpcn.out, self.albedo, eps)
+        spec_out = tf_postprocess_specular(self.spec_kpcn.out)
+        self.out = diff_out + spec_out
+
+        self.loss = tf.reduce_mean(tf.abs(self.out - self.gt_out), name='l1_loss')
+        self.loss_summary = tf.summary.scalar('loss', self.loss)
+        self.global_step = tf.Variable(0, trainable=False, name='global_step')
+        self.learning_rate = tf.train.exponential_decay(learning_rate, self.global_step, 100000, 0.96)
+        opt = tf.train.AdamOptimizer(self.learning_rate, epsilon=1e-4)
+        grads_and_vars = opt.compute_gradients(self.loss)
+        grads_and_vars = filter(lambda gv: None not in gv, grads_and_vars)
+        grads_and_vars = [(tf.clip_by_value(grad, -1.0, 1.0), var) for grad, var in grads_and_vars]
+        self.opt_op = opt.apply_gradients(grads_and_vars, global_step=self.global_step)
+        self.train_writer = tf.summary.FileWriter(
+            get_run_dir(os.path.join(summary_dir, 'train')))
+
+    def run(self, sess, diff_batched_buffers, spec_batched_buffers, batched_albedo):
+        feed_dict = {
+            self.diff_kpcn.color:        diff_batched_buffers['color'],
+            self.diff_kpcn.grad_x:       diff_batched_buffers['grad_x'],
+            self.diff_kpcn.grad_y:       diff_batched_buffers['grad_y'],
+            self.diff_kpcn.var_color:    diff_batched_buffers['var_color'],
+            self.diff_kpcn.var_features: diff_batched_buffers['var_features'],
+            self.spec_kpcn.color:        spec_batched_buffers['color'],
+            self.spec_kpcn.grad_x:       spec_batched_buffers['grad_x'],
+            self.spec_kpcn.grad_y:       spec_batched_buffers['grad_y'],
+            self.spec_kpcn.var_color:    spec_batched_buffers['var_color'],
+            self.spec_kpcn.var_features: spec_batched_buffers['var_features'],
+            self.albedo:                 batched_albedo,
+        }
+        return sess.run(self.out, feed_dict)
+
+    def run_train_step(self, sess, iteration):
+        # feed_dict = {
+        #     self.diff_kpcn.color:        diff_batched_buffers['color'],
+        #     self.diff_kpcn.grad_x:       diff_batched_buffers['grad_x'],
+        #     self.diff_kpcn.grad_y:       diff_batched_buffers['grad_y'],
+        #     self.diff_kpcn.var_color:    diff_batched_buffers['var_color'],
+        #     self.diff_kpcn.var_features: diff_batched_buffers['var_features'],
+        #     self.spec_kpcn.color:        spec_batched_buffers['color'],
+        #     self.spec_kpcn.grad_x:       spec_batched_buffers['grad_x'],
+        #     self.spec_kpcn.grad_y:       spec_batched_buffers['grad_y'],
+        #     self.spec_kpcn.var_color:    spec_batched_buffers['var_color'],
+        #     self.spec_kpcn.var_features: spec_batched_buffers['var_features'],
+        #     self.albedo:                 batched_albedo,
+        #     self.gt_out:                 gt_out,
+        # }
+        # _, loss, loss_summary = sess.run(
+        #     [self.opt_op, self.loss, self.loss_summary], feed_dict)
+        _, loss, loss_summary = sess.run([self.opt_op, self.loss, self.loss_summary])
+        self.train_writer.add_summary(loss_summary, iteration)
+        return loss
+
+    def run_validation(self, sess):
+        return sess.run([self.loss, self.diff_kpcn.color, self.out, self.gt_out])
+
+    def save(self, sess, iteration, checkpoint_dir='checkpoints', write_meta_graph=True):
+        self.diff_kpcn.save(sess, iteration, checkpoint_dir, write_meta_graph)
+        self.spec_kpcn.save(sess, iteration, checkpoint_dir, write_meta_graph)
+
+    def restore(self, sess, restore_path):
+        diff_restore_path, spec_restore_path = restore_path
+        self.diff_kpcn.restore(sess, diff_restore_path, optimistic=True)
+        self.spec_kpcn.restore(sess, spec_restore_path, optimistic=True)

@@ -248,7 +248,10 @@ def write_tfrecords(tfrecord_filepath, input_exr_files, gt_exr_files, patches_pe
     while len(example_buffer) > 0:
         write_example_buffer()
 
-def make_decode(is_diffuse, tf_dtype, buffer_h, buffer_w, eps, clip_ims):
+def make_decode(mode, tf_dtype, buffer_h, buffer_w, eps, clip_ims):
+    """Mode options: 'diff', 'spec', 'comb'."""
+    diff_or_comb = mode in {'spec', 'comb'}
+    spec_or_comb = mode in {'spec', 'comb'}
 
     def decode(serialized_example):
         """De-serialize and preprocess TFRecord example."""
@@ -260,12 +263,12 @@ def make_decode(is_diffuse, tf_dtype, buffer_h, buffer_w, eps, clip_ims):
             'depth':          tf.FixedLenFeature([], tf.string),
             'depthVariance':  tf.FixedLenFeature([], tf.string),
         }
-        if is_diffuse:
+        if diff_or_comb:
             _features['diffuse'] = tf.FixedLenFeature([], tf.string)
             _features['diffuseVariance'] = tf.FixedLenFeature([], tf.string)
             _features['gt_diffuse'] = tf.FixedLenFeature([], tf.string)
             _features['gt_albedo'] = tf.FixedLenFeature([], tf.string)
-        else:
+        if spec_or_comb:
             _features['specular'] = tf.FixedLenFeature([], tf.string)
             _features['specularVariance'] = tf.FixedLenFeature([], tf.string)
             _features['gt_specular'] = tf.FixedLenFeature([], tf.string)
@@ -278,19 +281,21 @@ def make_decode(is_diffuse, tf_dtype, buffer_h, buffer_w, eps, clip_ims):
 
         # clipping
         if clip_ims:
-            if is_diffuse:
+            if diff_or_comb:
                 p['diffuse']     = tf.clip_by_value(p['diffuse'], 0.0, 1.0)
                 p['gt_diffuse']  = tf.clip_by_value(p['gt_diffuse'], 0.0, 1.0)
-            else:
+            if spec_or_comb:
                 p['specular']    = tf.clip_by_value(p['specular'], 0.0, 1.0)
                 p['gt_specular'] = tf.clip_by_value(p['gt_specular'], 0.0, 1.0)
 
         # preprocess
-        if is_diffuse:
+        if mode == 'comb':
+            p['gt_comb'] = p['gt_diffuse'] + p['gt_specular']
+        if diff_or_comb:
             p['diffuse'] = tf_preprocess_diffuse(p['diffuse'], p['albedo'], eps)
             p['gt_diffuse'] = tf_preprocess_diffuse(p['gt_diffuse'], p['gt_albedo'], eps)
             p['diffuseVariance'] = tf_preprocess_diffuse_variance(p['diffuseVariance'], p['albedo'], eps)
-        else:
+        if spec_or_comb:
             p['specular'] = tf_preprocess_specular(p['specular'])
             p['gt_specular'] = tf_preprocess_specular(p['gt_specular'])
             p['specularVariance'] = tf_preprocess_specular_variance(p['specular'], p['specularVariance'])
@@ -301,15 +306,40 @@ def make_decode(is_diffuse, tf_dtype, buffer_h, buffer_w, eps, clip_ims):
             p['albedoVariance'],
             p['depthVariance']], axis=-1)
 
-        return (
-            p['diffuse'] if is_diffuse else p['specular'],
-            p['normal'],
-            p['albedo'],
-            p['depth'],
-            p['diffuseVariance'] if is_diffuse else p['specularVariance'],
-            variance_features,
-            p['gt_diffuse'] if is_diffuse else p['gt_specular'],
-        )  # i.e. always return 7 tensors
+        if mode == 'diff':
+            return (
+                p['diffuse'],
+                p['normal'],
+                p['albedo'],
+                p['depth'],
+                p['diffuseVariance'],
+                variance_features,
+                p['gt_diffuse'],
+            )  # 7 tensors
+        elif mode == 'spec':
+            return (
+                p['specular'],
+                p['normal'],
+                p['albedo'],
+                p['depth'],
+                p['specularVariance'],
+                variance_features,
+                p['gt_specular'],
+            )  # 7 tensors
+        elif mode == 'comb':
+            return (
+                p['diffuse'],
+                p['specular'],
+                p['normal'],
+                p['albedo'],
+                p['depth'],
+                p['diffuseVariance'],
+                p['specularVariance'],
+                variance_features,
+                p['gt_diffuse'],
+                p['gt_specular'],
+                p['gt_comb'],
+            )  # 11 tensors
 
     return decode
 
