@@ -17,7 +17,7 @@ class DKPCN(object):
     curr_index = -1
 
     def __init__(self, tf_buffers, buffer_h, buffer_w, layers_config,
-                 is_training, learning_rate, summary_dir, scope=None):
+                 is_training, learning_rate, summary_dir, scope=None, save_best=False):
 
         self.buffer_h = buffer_h
         self.buffer_w = buffer_w
@@ -97,6 +97,9 @@ class DKPCN(object):
                 get_run_dir(os.path.join(summary_dir, 'train')))
             self.validation_writer = tf.summary.FileWriter(
                 get_run_dir(os.path.join(summary_dir, 'validation')))
+            mtk = 1 if save_best else 5
+            self.saver = tf.train.Saver(
+                tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope=self.scope), max_to_keep=mtk)
 
     def _filter(self, color, kernels):
 
@@ -146,7 +149,7 @@ class DKPCN(object):
 
     @staticmethod
     def _residual_block(_in, i, dropout_keep_prob, is_training):
-        with tf.variable_scope('residual_block_%d' % i):
+        with tf.variable_scope('residual_block_%s' % str(i)):
             out = tf.nn.relu(_in)
             out = tf.layers.conv2d(
                 out, filters=100, kernel_size=3, strides=1, padding='same', activation=None)
@@ -155,6 +158,21 @@ class DKPCN(object):
             out = tf.layers.conv2d(
                 out, filters=100, kernel_size=3, strides=1, padding='same', activation=None)
         return _in + out
+
+    def _scale_compositor(self, denoised_fine, denoised_coarse):
+        with tf.variable_scope('scale_compositor'):
+            alpha = tf.concat((denoised_fine, denoised_coarse), axis=-1)  # won't work if diff sizes?
+            alpha = tf.layers.conv2d(
+                alpha, filters=100, kernel_size=1, strides=1, padding='same', activation=None)
+            alpha = self._residual_block(alpha, 'sc1', 0.9, self.is_training)
+            alpha = self._residual_block(alpha, 'sc2', 0.9, self.is_training)
+            alpha = tf.layers.conv2d(
+                alpha, filters=1, kernel_size=1, strides=1, padding='same', activation=None)
+            alpha = tf.nn.sigmoid(alpha)
+            # blend fine and coarse images
+            return denoised_fine \
+                - alpha * upsampled(downsampled(denoised_fine)) \
+                + alpha * upsampled(denoised_coarse)
 
     def run(self, sess, batched_buffers):
         feed_dict = {
@@ -178,8 +196,7 @@ class DKPCN(object):
         if not os.path.exists(checkpoint_dir):
             os.makedirs(checkpoint_dir)
         base_filepath = os.path.join(checkpoint_dir, 'var')
-        saver = tf.train.Saver(tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope=self.scope))
-        saver.save(sess, base_filepath, global_step=iteration, write_meta_graph=write_meta_graph)
+        self.saver.save(sess, base_filepath, global_step=iteration, write_meta_graph=write_meta_graph)
         print('[+] Saved current parameters to %s-%d.' % (base_filepath, iteration))
 
     @staticmethod

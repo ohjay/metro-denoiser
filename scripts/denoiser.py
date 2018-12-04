@@ -32,7 +32,7 @@ class Denoiser(object):
     @staticmethod
     def _training_loop(sess, kpcn, train_init_op, val_init_op, identifier, log_freq,
                        save_freq, viz_freq, max_epochs, checkpoint_dir, block_on_viz,
-                       restore_path='', reset_lr=True):
+                       restore_path='', reset_lr=True, save_best=False):
         # initialize/restore
         sess.run(tf.group(
             tf.global_variables_initializer(), tf.local_variables_initializer()))
@@ -61,7 +61,7 @@ class Denoiser(object):
                                 min_avg_train_loss = avg_loss
                             print('[step %07d] %s loss: %.5f' % (i, identifier, avg_loss))
                             total_loss, count = 0.0, 0
-                        if (i + 1) % save_freq == 0:
+                        if (i + 1) % save_freq == 0 and not save_best:
                             kpcn.save(sess, i, checkpoint_dir=checkpoint_dir)
                             print('[o] Saved model.')
                     except tf.errors.OutOfRangeError:
@@ -84,6 +84,9 @@ class Denoiser(object):
                 avg_loss = total_loss / count
                 if avg_loss < min_avg_val_loss:
                     min_avg_val_loss = avg_loss
+                    if save_best:
+                        kpcn.save(sess, i, checkpoint_dir=checkpoint_dir)
+                        print('[o] Saved model (best iteration: %d).' % i)
                 loss_summary = sess.run(kpcn.loss_summary, {kpcn.loss: avg_loss})
                 kpcn.validation_writer.add_summary(loss_summary, i)
                 time_elapsed = time.time() - start_time
@@ -118,6 +121,7 @@ class Denoiser(object):
         summary_dir    = config['train_params'].get('summary_dir', 'summaries')
         block_on_viz   = config['train_params'].get('block_on_viz', False)
         reset_lr       = config['train_params'].get('reset_lr', True)
+        save_best      = config['train_params'].get('save_best', False)
 
         train_diff     = config['kpcn']['diff']['train_include']
         train_spec     = config['kpcn']['spec']['train_include']
@@ -142,7 +146,7 @@ class Denoiser(object):
                 _tf_buffers = tf_buffers['diff'] if comb else tf_buffers
                 self.diff_kpcn = DKPCN(
                     _tf_buffers, patch_size, patch_size, layers_config,
-                    is_training, learning_rate, summary_dir, scope='diffuse')
+                    is_training, learning_rate, summary_dir, scope='diffuse', save_best=save_best)
 
             if train_spec:
                 spec_checkpoint_dir = os.path.join(checkpoint_dir, 'spec')
@@ -150,21 +154,24 @@ class Denoiser(object):
                 _tf_buffers = tf_buffers['spec'] if comb else tf_buffers
                 self.spec_kpcn = DKPCN(
                     _tf_buffers, patch_size, patch_size, layers_config,
-                    is_training, learning_rate, summary_dir, scope='specular')
+                    is_training, learning_rate, summary_dir, scope='specular', save_best=save_best)
 
             if comb:
                 self.comb_kpcn      = CombinedModel(
                     self.diff_kpcn, self.spec_kpcn, tf_buffers['comb'], self.eps, learning_rate, summary_dir)
                 comb_checkpoint_dir = os.path.join(checkpoint_dir, 'comb')
                 restore_path        = (diff_restore_path, spec_restore_path)
-                self._training_loop(sess, self.comb_kpcn, init_ops['comb_train'], init_ops['comb_val'], 'comb',
-                    log_freq, save_freq, viz_freq, max_epochs, comb_checkpoint_dir, block_on_viz, restore_path, reset_lr)
+                self._training_loop(sess, self.comb_kpcn, init_ops['comb_train'], init_ops['comb_val'],
+                    'comb', log_freq, save_freq, viz_freq, max_epochs, comb_checkpoint_dir, block_on_viz,
+                    restore_path, reset_lr, save_best)
             elif train_diff:
-                self._training_loop(sess, self.diff_kpcn, init_ops['diff_train'], init_ops['diff_val'], 'diff',
-                    log_freq, save_freq, viz_freq, max_epochs, diff_checkpoint_dir, block_on_viz, diff_restore_path, reset_lr)
+                self._training_loop(sess, self.diff_kpcn, init_ops['diff_train'], init_ops['diff_val'],
+                    'diff', log_freq, save_freq, viz_freq, max_epochs, diff_checkpoint_dir, block_on_viz,
+                    diff_restore_path, reset_lr, save_best)
             elif train_spec:
-                self._training_loop(sess, self.spec_kpcn, init_ops['spec_train'], init_ops['spec_val'], 'spec',
-                    log_freq, save_freq, viz_freq, max_epochs, spec_checkpoint_dir, block_on_viz, spec_restore_path, reset_lr)
+                self._training_loop(sess, self.spec_kpcn, init_ops['spec_train'], init_ops['spec_val'],
+                    'spec', log_freq, save_freq, viz_freq, max_epochs, spec_checkpoint_dir, block_on_viz,
+                    spec_restore_path, reset_lr, save_best)
 
     def load_data(self, config, shuffle=True, comb=False):
         batch_size        = config['train_params'].get('batch_size', 5)

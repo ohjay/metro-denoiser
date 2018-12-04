@@ -506,7 +506,7 @@ def write_error_map(error_map, key, filepath):
 
 def generate_sampling_map(error_map, patch_size):
     """Generate a sampling map from a (nonnegative) error map."""
-    box_filter  = np.ones((65, 65)) * (1.0 / 4225.0)
+    box_filter  = np.ones((patch_size, patch_size)) / float(patch_size * patch_size)
     # per-window error instead of per-pixel error
     patch_error_r = convolve(error_map[:, :, 0], box_filter, 'same', 'auto')
     patch_error_g = convolve(error_map[:, :, 1], box_filter, 'same', 'auto')
