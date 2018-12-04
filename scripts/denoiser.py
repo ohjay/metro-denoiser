@@ -6,9 +6,11 @@ import yaml
 import time
 import shutil
 import random
+import pickle
 import argparse
 import numpy as np
 from math import sqrt
+from tqdm import tqdm
 import tensorflow as tf
 from scipy.misc import imsave
 
@@ -309,22 +311,33 @@ class Denoiser(object):
 
     def sample_data(self, config):
         """Write data to TFRecord files for later use."""
-        data_dir             = config['data']['data_dir']
-        scenes               = config['data']['scenes']
-        splits               = config['data']['splits']
-        in_filename          = '*-%sspp.exr' % str(config['data']['in_spp']).zfill(5)
-        gt_filename          = '*-%sspp.exr' % str(config['data']['gt_spp']).zfill(5)
-        tfrecord_dir         = config['data']['tfrecord_dir']
-        pstart               = config['data'].get('parse_start', 0)
-        pstep                = config['data'].get('parse_step', 1)
-        pshuffle             = config['data'].get('parse_shuffle', False)
-        patch_size           = config['data'].get('patch_size', 65)
-        patches_per_im       = config['data'].get('patches_per_im', 400)
-        save_debug_ims       = config['data'].get('save_debug_ims', False)
-        save_debug_ims_every = config['data'].get('save_debug_ims_every', 1)
-        color_var_weight     = config['data'].get('color_var_weight', 1.0)
-        normal_var_weight    = config['data'].get('normal_var_weight', 1.0)
-        file_example_limit   = config['data'].get('file_example_limit', 1e5)
+        data_dir                    = config['data']['data_dir']
+        scenes                      = config['data']['scenes']
+        splits                      = config['data']['splits']
+        in_filename                 = '*-%sspp.exr' % str(config['data']['in_spp']).zfill(5)
+        gt_filename                 = '*-%sspp.exr' % str(config['data']['gt_spp']).zfill(5)
+        tfrecord_dir                = config['data']['tfrecord_dir']
+        pstart                      = config['data'].get('parse_start', 0)
+        pstep                       = config['data'].get('parse_step', 1)
+        pshuffle                    = config['data'].get('parse_shuffle', False)
+        patch_size                  = config['data'].get('patch_size', 65)
+        patches_per_im              = config['data'].get('patches_per_im', 400)
+        save_debug_ims              = config['data'].get('save_debug_ims', False)
+        save_debug_ims_every        = config['data'].get('save_debug_ims_every', 1)
+        color_var_weight            = config['data'].get('color_var_weight', 1.0)
+        normal_var_weight           = config['data'].get('normal_var_weight', 1.0)
+        file_example_limit          = config['data'].get('file_example_limit', 1e5)
+        use_error_maps_for_sampling = config['data'].get('use_error_maps_for_sampling', False)
+        out_dir                     = config['evaluate']['out_dir']
+
+        # load error maps
+        error_maps = None
+        if use_error_maps_for_sampling:
+            errtype = 'spec' if 'spec' in tfrecord_dir else 'diff'
+            em_base = '%s_error.pickle' % errtype
+            em_filepath = os.path.join(out_dir, em_base)
+            with open(em_filepath, 'rb') as handle:
+                error_maps = pickle.load(handle)
 
         for scene in scenes:
             input_exr_files = sorted(glob.glob(os.path.join(data_dir, scene, in_filename)))
@@ -360,7 +373,8 @@ class Denoiser(object):
                     tfrecord_filepath, input_exr_files[start:end], gt_exr_files[start:end],
                     patches_per_im, patch_size, self.fp16, shuffle=pshuffle, debug_dir=debug_dir,
                     save_debug_ims_every=save_debug_ims_every, color_var_weight=color_var_weight,
-                    normal_var_weight=normal_var_weight, file_example_limit=file_example_limit)
+                    normal_var_weight=normal_var_weight, file_example_limit=file_example_limit,
+                    error_maps=error_maps)
 
     def visualize_data(self, config):
         """Visualize sampled data stored in the TFRecord files."""
@@ -417,7 +431,7 @@ class Denoiser(object):
                 im_paths = [config['evaluate']['im_path']]
 
             # loop over all images (might just be one)
-            for im_path in im_paths:
+            for im_path in tqdm(im_paths):
                 if im_path.endswith('exr'):
                     input_buffers = du.read_exr(im_path, fp16=self.fp16)
                     input_buffers = du.stack_channels(input_buffers)

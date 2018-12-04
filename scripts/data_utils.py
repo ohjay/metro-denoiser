@@ -10,6 +10,7 @@ from math import sqrt
 import tensorflow as tf
 from scipy.misc import imsave
 import matplotlib.pyplot as plt
+from scipy.signal import convolve
 from scipy.ndimage.filters import gaussian_filter
 
 # ===============================================
@@ -170,7 +171,7 @@ def _bytes_feature(value):
 
 def write_tfrecords(tfrecord_filepath, input_exr_files, gt_exr_files, patches_per_im,
                     patch_size, fp16, shuffle=False, debug_dir='', save_debug_ims_every=1,
-                    color_var_weight=1.0, normal_var_weight=1.0, file_example_limit=1e5):
+                    color_var_weight=1.0, normal_var_weight=1.0, file_example_limit=1e5, error_maps=None):
     """Export PATCHES_PER_IM examples for each EXR file.
     Accepts two lists of EXR filepaths with corresponding orderings.
 
@@ -202,6 +203,11 @@ def write_tfrecords(tfrecord_filepath, input_exr_files, gt_exr_files, patches_pe
         input_basename = os.path.basename(input_filepath)
         input_id = os.path.join(os.path.basename(input_dirname), input_basename)
 
+        sampling_pdf = None
+        if error_maps is not None:
+            # use error map for sampling
+            sampling_pdf = generate_sampling_map(error_maps[input_filepath], patch_size)
+
         input_buffers = read_exr(input_filepath, fp16=fp16)
         input_buffers = stack_channels(input_buffers)
         try:
@@ -209,7 +215,7 @@ def write_tfrecords(tfrecord_filepath, input_exr_files, gt_exr_files, patches_pe
             _debug_dir = debug_dir if i % save_debug_ims_every == 0 else ''
             patch_indices = sample_patches(
                 input_buffers, patches_per_im, patch_size, patch_size, _debug_dir, _input_id,
-                color_var_weight=color_var_weight, normal_var_weight=normal_var_weight)
+                color_var_weight=color_var_weight, normal_var_weight=normal_var_weight, pdf=sampling_pdf)
         except ValueError as e:
             print('[-] Invalid value during %s sampling. (%s)' % (input_id, str(e)))
             continue
@@ -409,7 +415,7 @@ def gaussian_filter_wrapper(signal, sigma=1.0):
     return signal
 
 def sample_patches(buffers, num_patches, patch_h, patch_w, debug_dir, input_id,
-                   color_var_weight=1.0, normal_var_weight=1.0):
+                   color_var_weight=1.0, normal_var_weight=1.0, pdf=None):
     """
     Sample NUM_PATCHES (y, x) indices for (PATCH_H, PATCH_W)-sized patches from the given frame.
     As per Bako et al., we will find candidate patches and prune based on color/normal variance.
@@ -423,24 +429,29 @@ def sample_patches(buffers, num_patches, patch_h, patch_w, debug_dir, input_id,
 
     color = clip_and_gamma_correct(
         np.concatenate([buffers['R'], buffers['G'], buffers['B']], axis=-1))
+    c_var = None
+    n_var = None
 
     # 2D PDF ---------------------------------------------------------------
 
-    c_var = compute_processed_variance(color, patch_h, patch_w)
-    n_var = compute_processed_variance(buffers['normal'], patch_h, patch_w)
+    if pdf is None:
+        c_var = compute_processed_variance(color, patch_h, patch_w)
+        n_var = compute_processed_variance(buffers['normal'], patch_h, patch_w)
 
-    pdf = color_var_weight * c_var + normal_var_weight * n_var
-    if color_var_weight > 0:
-        pdf *= (c_var > 0)  # no zero-variance patches
+        pdf = color_var_weight * c_var + normal_var_weight * n_var
+        if color_var_weight > 0:
+            pdf *= (c_var > 0)  # no zero-variance patches
 
-    # Set out-of-bounds regions to zero
-    _template = np.zeros_like(pdf)
-    _template[y_range[0]:y_range[1], x_range[0]:x_range[1]] \
-        = pdf[y_range[0]:y_range[1], x_range[0]:x_range[1]]
-    pdf = _template
+        # Set out-of-bounds regions to zero
+        _template = np.zeros_like(pdf)
+        _template[y_range[0]:y_range[1], x_range[0]:x_range[1]] \
+            = pdf[y_range[0]:y_range[1], x_range[0]:x_range[1]]
+        pdf = _template
 
-    invalid_complain(pdf)
-    pdf /= np.sum(pdf)  # normalize to [0, 1], sum to 1
+        invalid_complain(pdf)
+        pdf /= np.sum(pdf)  # normalize to [0, 1], sum to 1
+    else:
+        print('[o] (using error-based sampling map)')
 
     # SAMPLING -------------------------------------------------------------
 
@@ -468,12 +479,15 @@ def sample_patches(buffers, num_patches, patch_h, patch_w, debug_dir, input_id,
             patches_overlay[y-rh:y+rh+1, x-rw:x+rw+1, :] = color[y-rh:y+rh+1, x-rw:x+rw+1, :]
 
         qsize = (w // 2, h // 2)  # w, h ordering
-        _c_var = cv2.resize(c_var, qsize)
-        _n_var = cv2.resize(n_var, qsize)
-        _pdf   = cv2.resize(pdf,   qsize)
 
-        imsave(os.path.join(debug_dir, input_id + '_00_color_var.jpg'),       _c_var)
-        imsave(os.path.join(debug_dir, input_id + '_01_normal_var.jpg'),      _n_var)
+        if c_var is not None:
+            _c_var = cv2.resize(c_var, qsize)
+            imsave(os.path.join(debug_dir, input_id + '_00_color_var.jpg'), _c_var)
+        if n_var is not None:
+            _n_var = cv2.resize(n_var, qsize)
+            imsave(os.path.join(debug_dir, input_id + '_01_normal_var.jpg'), _n_var)
+
+        _pdf = cv2.resize(pdf, qsize)
         imsave(os.path.join(debug_dir, input_id + '_02_pdf.jpg'),             _pdf)
         imsave(os.path.join(debug_dir, input_id + '_03_patches.jpg'),         patches)
         imsave(os.path.join(debug_dir, input_id + '_04_patches_overlay.jpg'), patches_overlay)
@@ -489,6 +503,24 @@ def write_error_map(error_map, key, filepath):
     error_maps[key] = error_map
     with open(filepath, 'wb') as handle:
         pickle.dump(error_maps, handle, protocol=pickle.HIGHEST_PROTOCOL)
+
+def generate_sampling_map(error_map, patch_size):
+    """Generate a sampling map from a (nonnegative) error map."""
+    box_filter  = np.ones((65, 65)) * (1.0 / 4225.0)
+    # per-window error instead of per-pixel error
+    patch_error_r = convolve(error_map[:, :, 0], box_filter, 'same', 'auto')
+    patch_error_g = convolve(error_map[:, :, 1], box_filter, 'same', 'auto')
+    patch_error_b = convolve(error_map[:, :, 2], box_filter, 'same', 'auto')
+    patch_error   = patch_error_r + patch_error_g + patch_error_b
+    # invalidate out-of-bounds regions
+    y_range = (patch_size // 2, patch_error.shape[0] - patch_size // 2)  # [)
+    x_range = (patch_size // 2, patch_error.shape[1] - patch_size // 2)  # [)
+    _template = np.zeros_like(patch_error)
+    _template[y_range[0]:y_range[1], x_range[0]:x_range[1]] \
+        = patch_error[y_range[0]:y_range[1], x_range[0]:x_range[1]]
+    pdf = _template
+    # normalize to create 2D PDF
+    return pdf / np.sum(pdf)
 
 # ===============================================
 # PRE/POST-PROCESSING (NUMPY)
