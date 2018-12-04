@@ -1,8 +1,9 @@
 op: sample_data
+# train, sample_data, visualize_data, denoise, compute_error
 
 data:
   data_dir: /media/owen/302371f7-852e-4f78-94e6-4d3ffebda36e/deep_learning_denoising/renderings
-  tfrecord_dir: /media/owen/302371f7-852e-4f78-94e6-4d3ffebda36e/renderings_tfrecords_partition
+  tfrecord_dir: /media/owen/302371f7-852e-4f78-94e6-4d3ffebda36e/renderings_tfrecords_partition_diff
   scenes:
     - bathroom2
     - car2
@@ -13,9 +14,9 @@ data:
     - staircase
     - room3
   splits:
-    train:      0.90
+    train:      0.95
     validation: 0.05
-    test:       0.05
+    test:       0.00
   in_spp: 256
   gt_spp: 8192
   parse_start: 0
@@ -28,12 +29,13 @@ data:
   save_debug_ims_every: 10
   color_var_weight: 1.0
   normal_var_weight: 1.0
-  shuffle_buffer_size_limit: 10000
+  shuffle_buffer_size_limit: 5000
   shuffle_filenames: True
   clip_ims: False
+  use_error_maps_for_sampling: True
 
 train_params:
-  batch_size: 5
+  batch_size: 12
   learning_rate: 1e-4
   reset_lr: True
   max_epochs: 1e4
@@ -48,91 +50,68 @@ train_params:
 kpcn:
   diff:
     train_include: True
-    # restore_path: /home/owen/workspace/metro/scripts/checkpoints/diff_saved/var-169999
+    restore_path: /home/owen/workspace/metro/scripts/checkpoints/diff_saved/var-169999
   spec:
     train_include: False
-    # restore_path: /home/owen/workspace/metro/scripts/checkpoints/spec_saved/var-39999
+    restore_path: /home/owen/workspace/metro/scripts/checkpoints/spec_saved/var-409999
 
 evaluate:
   im_path: /media/owen/302371f7-852e-4f78-94e6-4d3ffebda36e/deep_learning_denoising/renderings/bathroom2/18889126-00256spp.exr
   out_dir: out
+  write_error_ims: False
 
 layers:
   - type: conv2d
     num_outputs: 100
-    kernel_size: 5
+    kernel_size: 3
     stride: 1
     padding: same
     activation: relu
-
-  - type: batch_normalization
 
   - type: conv2d
     num_outputs: 100
-    kernel_size: 5
+    kernel_size: 3
     stride: 1
     padding: same
-    activation: relu
+    activation: x
 
-  - type: batch_normalization
+  - type: residual_block
+    dropout_keep_prob: 0.7
+
+  - type: residual_block
+    dropout_keep_prob: 0.7
+
+  - type: residual_block
+    dropout_keep_prob: 0.5
+
+  - type: residual_block
+    dropout_keep_prob: 0.5
+
+  - type: residual_block
+    dropout_keep_prob: 0.5
+
+  - type: residual_block
+    dropout_keep_prob: 0.5
+
+  - type: residual_block
+    dropout_keep_prob: 0.5
+
+  - type: residual_block
+    dropout_keep_prob: 0.5
+
+  - type: residual_block
+    dropout_keep_prob: 0.5
 
   - type: conv2d
     num_outputs: 100
-    kernel_size: 5
+    kernel_size: 1
     stride: 1
     padding: same
     activation: relu
-
-  - type: batch_normalization
-
-  - type: conv2d
-    num_outputs: 100
-    kernel_size: 5
-    stride: 1
-    padding: same
-    activation: relu
-
-  - type: batch_normalization
-
-  - type: conv2d
-    num_outputs: 100
-    kernel_size: 5
-    stride: 1
-    padding: same
-    activation: relu
-
-  - type: batch_normalization
-
-  - type: conv2d
-    num_outputs: 100
-    kernel_size: 5
-    stride: 1
-    padding: same
-    activation: relu
-
-  - type: batch_normalization
-
-  - type: conv2d
-    num_outputs: 100
-    kernel_size: 5
-    stride: 1
-    padding: same
-    activation: relu
-
-  - type: batch_normalization
-
-  - type: conv2d
-    num_outputs: 100
-    kernel_size: 5
-    stride: 1
-    padding: same
-    activation: relu
-
-  - type: batch_normalization
 
   # output
   - type: conv2d
     num_outputs: 441  # 21 * 21
-    kernel_size: 5
+    kernel_size: 1
     stride: 1
     padding: same
