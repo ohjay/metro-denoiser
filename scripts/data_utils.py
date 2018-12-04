@@ -2,6 +2,7 @@ import os
 import cv2
 import time
 import Imath
+import pickle
 import random
 import OpenEXR
 import numpy as np
@@ -52,7 +53,14 @@ def write_exr(buffers, filepath):
     """
     Write dictionary of NumPy arrays to EXR file.
     `read_exr` and `write_exr` are inverse operations.
+
+    If BUFFERS is a NumPy array with 3 channels, will interpret as RGB and proceed.
     """
+    if type(buffers) == np.ndarray and buffers.shape[-1] == 3:
+        # convert into dictionary
+        assert len(buffers.shape) == 3
+        buffers = {'R': buffers[:, :, 0], 'G': buffers[:, :, 1], 'B': buffers[:, :, 2]}
+
     if buffers['R'].dtype == np.float16:
         pt_dtype = Imath.PixelType.HALF
     else:
@@ -471,6 +479,16 @@ def sample_patches(buffers, num_patches, patch_h, patch_w, debug_dir, input_id,
         imsave(os.path.join(debug_dir, input_id + '_04_patches_overlay.jpg'), patches_overlay)
 
     return patch_indices
+
+def write_error_map(error_map, key, filepath):
+    error_maps = {}
+    if os.path.isfile(filepath):
+        with open(filepath, 'rb') as handle:
+            error_maps = pickle.load(handle)
+    # update with new error map
+    error_maps[key] = error_map
+    with open(filepath, 'wb') as handle:
+        pickle.dump(error_maps, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
 # ===============================================
 # PRE/POST-PROCESSING (NUMPY)
