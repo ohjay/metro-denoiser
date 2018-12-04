@@ -282,13 +282,13 @@ def make_decode(mode, tf_dtype, buffer_h, buffer_w, eps, clip_ims):
         # clipping
         if clip_ims:
             if diff_or_comb:
-                p['diffuse']     = tf_clip_and_gamma_correct(p['diffuse'])
-                p['gt_diffuse']  = tf_clip_and_gamma_correct(p['gt_diffuse'])
+                p['diffuse']    = tf_clip_and_gamma_correct(p['diffuse'])
+                p['gt_diffuse'] = tf_clip_and_gamma_correct(p['gt_diffuse'])
                 # p['diffuse']     = tf.clip_by_value(p['diffuse'], 0.0, 1.0)
                 # p['gt_diffuse']  = tf.clip_by_value(p['gt_diffuse'], 0.0, 1.0)
             if spec_or_comb:
-                p['specular']     = tf_clip_and_gamma_correct(p['specular'])
-                p['gt_specular']  = tf_clip_and_gamma_correct(p['gt_specular'])
+                p['specular']    = tf_clip_and_gamma_correct(p['specular'])
+                p['gt_specular'] = tf_clip_and_gamma_correct(p['gt_specular'])
                 # p['specular']    = tf.clip_by_value(p['specular'], 0.0, 1.0)
                 # p['gt_specular'] = tf.clip_by_value(p['gt_specular'], 0.0, 1.0)
 
@@ -592,6 +592,9 @@ def postprocess_specular(out_specular):
 # ===============================================
 # PRE/POST-PROCESSING (TENSORFLOW)
 # ===============================================
+
+def tf_log_transform(im):
+    return tf.log(im + 1.0)
 
 def tf_clip_and_gamma_correct(im):
     return tf.pow(tf.clip_by_value(im, 0.0, 1.0), 1.0 / 2.2)

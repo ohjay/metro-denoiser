@@ -412,8 +412,10 @@ class Denoiser(object):
 
         # clip
         if config['data']['clip_ims']:
-            input_buffers['diffuse'] = np.clip(input_buffers['diffuse'], 0.0, 1.0)
-            input_buffers['specular'] = np.clip(input_buffers['specular'], 0.0, 1.0)
+            input_buffers['diffuse'] = du.clip_and_gamma_correct(input_buffers['diffuse'])
+            input_buffers['specular'] = du.clip_and_gamma_correct(input_buffers['specular'])
+            # input_buffers['diffuse'] = np.clip(input_buffers['diffuse'], 0.0, 1.0)
+            # input_buffers['specular'] = np.clip(input_buffers['specular'], 0.0, 1.0)
 
         # preprocess
         du.preprocess_diffuse(input_buffers, self.eps)
@@ -468,10 +470,10 @@ class Denoiser(object):
             print('[o] graph execution time: %s' % du.format_seconds(time.time() - start_time))
 
         # composite
-        diff_out = np.zeros((h, w, 3))
+        diff_out = np.zeros((h, w, 3), dtype=np.float32)
         diff_out[:, :w//2, :] = l_diff_out[0, :, :w//2,  :]
         diff_out[:, w//2:, :] = r_diff_out[0, :, -w//2:, :]
-        spec_out = np.zeros((h, w, 3))
+        spec_out = np.zeros((h, w, 3), dtype=np.float32)
         spec_out[:, :w//2, :] = l_spec_out[0, :, :w//2,  :]
         spec_out[:, w//2:, :] = r_spec_out[0, :, -w//2:, :]
 
@@ -480,23 +482,24 @@ class Denoiser(object):
         spec_out = du.postprocess_specular(spec_out)
 
         # combine
-        out = diff_out + spec_out
-        out = du.clip_and_gamma_correct(out)
+        _out = diff_out + spec_out
+        out = du.clip_and_gamma_correct(_out)
 
         _in = np.concatenate(
             [input_buffers['R'], input_buffers['G'], input_buffers['B']], axis=-1)
         _in = du.clip_and_gamma_correct(_in)
 
         # try to get gt image for comparison (might not exist)
-        gt_out = None
-        match = re.match(r'^(/.*\d+)-\d{5}spp.exr$', im_path)
+        _gt_out = None
+        gt_out  = None
+        match   = re.match(r'^(/.*\d+)-\d{5}spp.exr$', im_path)
         if match:
             gt_path = '%s-%sspp.exr' % (match.group(1), str(gt_spp).zfill(5))
             gt_buffers = du.read_exr(gt_path, fp16=self.fp16)
             gt_buffers = du.stack_channels(gt_buffers)
-            gt_out = np.concatenate(
+            _gt_out = np.concatenate(
                 [gt_buffers['R'], gt_buffers['G'], gt_buffers['B']], axis=-1)
-            gt_out = du.clip_and_gamma_correct(gt_out)
+            gt_out = du.clip_and_gamma_correct(_gt_out)
 
         # write and show
         if not os.path.exists(out_dir):
@@ -512,6 +515,36 @@ class Denoiser(object):
             ims_to_viz.append(gt_out)
             imsave(os.path.join(out_dir, _input_id + '_02_gt.jpg'), gt_out)
         du.show_multiple(*ims_to_viz, row_max=len(ims_to_viz), block_on_viz=True)
+
+        # write EXRs
+        du.write_exr({
+            'R': _out[:, :, 0],
+            'G': _out[:, :, 1],
+            'B': _out[:, :, 2]}, os.path.join(out_dir, _input_id + '_01_out.exr'))
+        du.write_exr({
+            'R': _gt_out[:, :, 0],
+            'G': _gt_out[:, :, 1],
+            'B': _gt_out[:, :, 2]}, os.path.join(out_dir, _input_id + '_02_gt.exr'))
+
+        # write error images
+        if gt_out is not None:
+            # error WITHOUT clipping and gamma correction
+            error = np.abs(_out - _gt_out)
+            imsave(os.path.join(out_dir, _input_id + '_03_error.jpg'), error)
+            diff_error = np.abs(diff_out - gt_buffers['diffuse'])
+            imsave(os.path.join(out_dir, _input_id + '_04_diff_error.jpg'), diff_error)
+            spec_error = np.abs(spec_out - gt_buffers['specular'])
+            imsave(os.path.join(out_dir, _input_id + '_05_spec_error.jpg'), spec_error)
+
+            # error WITH clipping and gamma correction
+            perceptual_error = np.abs(out - gt_out)
+            imsave(os.path.join(out_dir, _input_id + '_06_perceptual_error.jpg'), perceptual_error)
+            perceptual_diff_error = np.abs(
+                du.clip_and_gamma_correct(diff_out) - du.clip_and_gamma_correct(gt_buffers['diffuse']))
+            imsave(os.path.join(out_dir, _input_id + '_07_perceptual_diff_error.jpg'), perceptual_diff_error)
+            perceptual_spec_error = np.abs(
+                du.clip_and_gamma_correct(spec_out) - du.clip_and_gamma_correct(gt_buffers['specular']))
+            imsave(os.path.join(out_dir, _input_id + '_08_perceptual_spec_error.jpg'), perceptual_spec_error)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
