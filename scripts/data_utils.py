@@ -250,7 +250,7 @@ def write_tfrecords(tfrecord_filepath, input_exr_files, gt_exr_files, patches_pe
 
 def make_decode(mode, tf_dtype, buffer_h, buffer_w, eps, clip_ims):
     """Mode options: 'diff', 'spec', 'comb'."""
-    diff_or_comb = mode in {'spec', 'comb'}
+    diff_or_comb = mode in {'diff', 'comb'}
     spec_or_comb = mode in {'spec', 'comb'}
 
     def decode(serialized_example):
@@ -282,11 +282,15 @@ def make_decode(mode, tf_dtype, buffer_h, buffer_w, eps, clip_ims):
         # clipping
         if clip_ims:
             if diff_or_comb:
-                p['diffuse']     = tf.clip_by_value(p['diffuse'], 0.0, 1.0)
-                p['gt_diffuse']  = tf.clip_by_value(p['gt_diffuse'], 0.0, 1.0)
+                p['diffuse']     = tf_clip_and_gamma_correct(p['diffuse'])
+                p['gt_diffuse']  = tf_clip_and_gamma_correct(p['gt_diffuse'])
+                # p['diffuse']     = tf.clip_by_value(p['diffuse'], 0.0, 1.0)
+                # p['gt_diffuse']  = tf.clip_by_value(p['gt_diffuse'], 0.0, 1.0)
             if spec_or_comb:
-                p['specular']    = tf.clip_by_value(p['specular'], 0.0, 1.0)
-                p['gt_specular'] = tf.clip_by_value(p['gt_specular'], 0.0, 1.0)
+                p['specular']     = tf_clip_and_gamma_correct(p['specular'])
+                p['gt_specular']  = tf_clip_and_gamma_correct(p['gt_specular'])
+                # p['specular']    = tf.clip_by_value(p['specular'], 0.0, 1.0)
+                # p['gt_specular'] = tf.clip_by_value(p['gt_specular'], 0.0, 1.0)
 
         # preprocess
         if mode == 'comb':
@@ -589,13 +593,15 @@ def postprocess_specular(out_specular):
 # PRE/POST-PROCESSING (TENSORFLOW)
 # ===============================================
 
+def tf_clip_and_gamma_correct(im):
+    return tf.pow(tf.clip_by_value(im, 0.0, 1.0), 1.0 / 2.2)
+
 def tf_preprocess_diffuse(diffuse, albedo, eps):
     return tf.divide(diffuse, albedo + eps)
 
 def tf_preprocess_diffuse_variance(diffuse_variance, albedo, eps):
-    mean_albedo = tf.reduce_mean(albedo, axis=-1)
-    mean_albedo = tf.expand_dims(mean_albedo, -1)
-    return tf.divide(diffuse_variance, tf.square(mean_albedo + eps))
+    mean_albedo = tf.reduce_mean(albedo, axis=-1, keepdims=True)
+    return tf.divide(diffuse_variance, tf.square(mean_albedo) + eps)
 
 def tf_preprocess_specular(specular):
     return tf.log(specular + 1.0)

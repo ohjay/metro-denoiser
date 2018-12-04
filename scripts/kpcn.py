@@ -22,6 +22,7 @@ class DKPCN(object):
         self.buffer_h = buffer_h
         self.buffer_w = buffer_w
         self.is_training = is_training
+        self.valid_padding = False and self.is_training
 
         if scope is None:
             DKPCN.curr_index += 1
@@ -47,7 +48,7 @@ class DKPCN(object):
                     except AttributeError:
                         activation = None
                     if layer['type'] == 'conv2d':
-                        padding = 'valid' if self.is_training else 'same'
+                        padding = 'valid' if self.valid_padding else 'same'
                         out = tf.layers.conv2d(
                             out, layer['num_outputs'], layer['kernel_size'],
                             strides=layer['stride'], padding=padding, activation=activation, name='conv2d')
@@ -72,10 +73,11 @@ class DKPCN(object):
 
             # loss
             gt_out = tf_buffers['gt_out']
-            if self.is_training:
+            if self.valid_padding:
                 gt_out = tf_center_crop(gt_out, self.valid_h, self.valid_w)
             self.gt_out = tf.identity(gt_out, name='gt_out')  # (?, h, w, 3)
-            self.loss = tf.reduce_mean(tf.abs(self.out - self.gt_out), name='l1_loss')
+            self.loss = self._asymmetric_smape(self.color, self.out, self.gt_out, slope=2.0)
+            # self.loss = tf.identity(self._smape(self.out, self.gt_out), name='smape')
             self.loss_summary = tf.summary.scalar('loss', self.loss)
 
             # optimization
@@ -98,7 +100,7 @@ class DKPCN(object):
         # `color`   : (?, h, w, 3)
         # `kernels` : (?, h, w, kernel_size * kernel_size)
 
-        if self.is_training:
+        if self.valid_padding:
             y_extent = self.valid_h + self.kernel_size - 1
             x_extent = self.valid_w + self.kernel_size - 1
             color = tf_center_crop(color, y_extent, x_extent)
@@ -122,6 +124,22 @@ class DKPCN(object):
                 tf.reduce_sum(color_channel * kernels, axis=-1))
 
         return tf.stack(filtered_channels, axis=3)  # (?, h, w, 3)
+
+    @staticmethod
+    def _smape(out, gt_out):
+        """Symmetric mean absolute percentage error."""
+        return tf.reduce_mean(tf.abs(out - gt_out) / (tf.abs(out) + tf.abs(gt_out) + 1e-2))
+
+    @staticmethod
+    def _asymmetric_smape(_in, out, gt_out, slope):
+        ape = tf.abs(out - gt_out) / (tf.abs(out) + tf.abs(gt_out) + 1e-2)
+        return tf.reduce_mean(
+            ape * (1.0 + (slope - 1.0) * DKPCN._heaviside((out - gt_out) * (gt_out - _in))))
+
+    @staticmethod
+    def _heaviside(x):
+        """Elementwise Heaviside step function."""
+        return tf.maximum(tf.sign(x), 0.0)
 
     def run(self, sess, batched_buffers):
         feed_dict = {
@@ -191,7 +209,7 @@ class CombinedModel(object):
         self.albedo = tf_buffers_comb['albedo']
         self.gt_out = tf_buffers_comb['gt_out']
 
-        if self.diff_kpcn.is_training:
+        if self.diff_kpcn.valid_padding:
             self.albedo = tf_center_crop(self.albedo, self.diff_kpcn.valid_h, self.diff_kpcn.valid_w)
             self.gt_out = tf_center_crop(self.gt_out, self.diff_kpcn.valid_h, self.diff_kpcn.valid_w)
 
@@ -210,6 +228,8 @@ class CombinedModel(object):
         self.opt_op = opt.apply_gradients(grads_and_vars, global_step=self.global_step)
         self.train_writer = tf.summary.FileWriter(
             get_run_dir(os.path.join(summary_dir, 'train')))
+        self.validation_writer = tf.summary.FileWriter(
+            get_run_dir(os.path.join(summary_dir, 'validation')))
 
     def run(self, sess, diff_batched_buffers, spec_batched_buffers, batched_albedo):
         feed_dict = {
@@ -252,8 +272,8 @@ class CombinedModel(object):
         return sess.run([self.loss, self.diff_kpcn.color, self.out, self.gt_out])
 
     def save(self, sess, iteration, checkpoint_dir='checkpoints', write_meta_graph=True):
-        self.diff_kpcn.save(sess, iteration, checkpoint_dir, write_meta_graph)
-        self.spec_kpcn.save(sess, iteration, checkpoint_dir, write_meta_graph)
+        self.diff_kpcn.save(sess, iteration, os.path.join(checkpoint_dir, 'diff'), write_meta_graph)
+        self.spec_kpcn.save(sess, iteration, os.path.join(checkpoint_dir, 'spec'), write_meta_graph)
 
     def restore(self, sess, restore_path):
         diff_restore_path, spec_restore_path = restore_path
