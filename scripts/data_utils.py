@@ -498,7 +498,7 @@ def generate_sampling_map(error_map, patch_size):
     _template = np.zeros_like(patch_error)
     _template[y_range[0]:y_range[1], x_range[0]:x_range[1]] \
         = patch_error[y_range[0]:y_range[1], x_range[0]:x_range[1]]
-    pdf = _template
+    pdf = np.maximum(_template, 0.0)
     # normalize to create 2D PDF
     return pdf / np.sum(pdf)
 
