@@ -324,39 +324,20 @@ def make_decode(mode, tf_dtype, buffer_h, buffer_w, eps, clip_ims):
             p['albedoVariance'],
             p['depthVariance']], axis=-1)
 
-        if mode == 'diff':
+        if mode in {'diff', 'spec'}:
             return (
-                p['diffuse'],
-                p['normal'],
-                p['albedo'],
-                p['depth'],
-                p['diffuseVariance'],
+                p['diffuse'] if mode == 'diff' else p['specular'],
+                p['normal'], p['albedo'], p['depth'],
+                p['diffuseVariance'] if mode == 'diff' else p['specularVariance'],
                 variance_features,
-                p['gt_diffuse'],
-            )  # 7 tensors
-        elif mode == 'spec':
-            return (
-                p['specular'],
-                p['normal'],
-                p['albedo'],
-                p['depth'],
-                p['specularVariance'],
-                variance_features,
-                p['gt_specular'],
+                p['gt_diffuse'] if mode == 'diff' else p['gt_specular'],
             )  # 7 tensors
         elif mode == 'comb':
             return (
-                p['diffuse'],
-                p['specular'],
-                p['normal'],
-                p['albedo'],
-                p['depth'],
-                p['diffuseVariance'],
-                p['specularVariance'],
-                variance_features,
-                p['gt_diffuse'],
-                p['gt_specular'],
-                p['gt_comb'],
+                p['diffuse'], p['specular'],
+                p['normal'], p['albedo'], p['depth'],
+                p['diffuseVariance'], p['specularVariance'], variance_features,
+                p['gt_diffuse'], p['gt_specular'], p['gt_comb'],
             )  # 11 tensors
 
     return decode
