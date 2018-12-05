@@ -310,9 +310,10 @@ def make_decode(mode, tf_dtype, buffer_h, buffer_w, eps, clip_ims):
             p['gt_diffuse'] = tf_preprocess_diffuse(p['gt_diffuse'], p['gt_albedo'], eps)
             p['diffuseVariance'] = tf_preprocess_diffuse_variance(p['diffuseVariance'], p['albedo'], eps)
         if spec_or_comb:
+            p['specularVariance'] = tf_preprocess_specular_variance(
+                1.0 + tf.maximum(p['specular'], 0.0), p['specularVariance'])
             p['specular'] = tf_preprocess_specular(p['specular'])
             p['gt_specular'] = tf_preprocess_specular(p['gt_specular'])
-            p['specularVariance'] = tf_preprocess_specular_variance(p['specular'], p['specularVariance'])
         p['depth'], p['depthVariance'] = tf_preprocess_depth(p['depth'], p['depthVariance'])
 
         variance_features = tf.concat([
