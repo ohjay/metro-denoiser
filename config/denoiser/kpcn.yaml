@@ -1,4 +1,4 @@
-op: sample_data
+op: train
 # train, sample_data, visualize_data, denoise, compute_error
 
 data:
@@ -23,7 +23,7 @@ data:
   parse_step: 1
   parse_shuffle: True
   file_example_limit: 300
-  patch_size: 65
+  patch_size: 125
   patches_per_im: 500
   save_debug_ims: True
   save_debug_ims_every: 10
@@ -40,25 +40,29 @@ train_params:
   reset_lr: True
   max_epochs: 1e4
   log_freq: 100
-  save_freq: 10000
+  save_freq: 2000
+  save_best: False  # if True, ignores `save_freq`
   viz_freq: 1
   block_on_viz: False
   summary_dir: summaries
   checkpoint_dir: checkpoints
   fp16: False
+  clip_by_global_norm: False  # empirically not helpful
 
 kpcn:
   diff:
     train_include: True
-    restore_path: /home/owen/workspace/metro/scripts/checkpoints/diff_saved/var-169999
+    # restore_path: /home/owen/workspace/metro/scripts/checkpoints/diff_saved/var-169999
+    # restore_path: /home/owen/workspace/metro/scripts/checkpoints/diff/var-15999
   spec:
     train_include: False
-    restore_path: /home/owen/workspace/metro/scripts/checkpoints/spec_saved/var-409999
+    # restore_path: /home/owen/workspace/metro/scripts/checkpoints/spec_saved/var-409999
 
 evaluate:
   im_path: /media/owen/302371f7-852e-4f78-94e6-4d3ffebda36e/deep_learning_denoising/renderings/bathroom2/18889126-00256spp.exr
   out_dir: out
   write_error_ims: False
+  viz_kernels: True
 
 layers:
   - type: conv2d

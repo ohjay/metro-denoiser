@@ -52,14 +52,15 @@ class Denoiser(object):
                 total_loss, count = 0.0, 0
                 while True:
                     try:
-                        loss = kpcn.run_train_step(sess, i)
+                        loss, gnorm = kpcn.run_train_step(sess, i)
                         total_loss += loss
                         count += 1
                         if (i + 1) % log_freq == 0:
                             avg_loss = total_loss / count
                             if avg_loss < min_avg_train_loss:
                                 min_avg_train_loss = avg_loss
-                            print('[step %07d] %s loss: %.5f' % (i, identifier, avg_loss))
+                            print('[step %07d] %s loss: %.5f | gnorm: %.5f' \
+                                % (i, identifier, avg_loss, gnorm))
                             total_loss, count = 0.0, 0
                         if (i + 1) % save_freq == 0 and not save_best:
                             kpcn.save(sess, i, checkpoint_dir=checkpoint_dir)
@@ -131,6 +132,8 @@ class Denoiser(object):
         if type(max_epochs) == str:
             max_epochs = int(eval(max_epochs))
 
+        clip_by_global_norm = config['train_params'].get('clip_by_global_norm', False)
+
         # load data
         comb = train_diff and train_spec
         tf_buffers, init_ops = self.load_data(config, comb=comb)
@@ -146,7 +149,8 @@ class Denoiser(object):
                 _tf_buffers = tf_buffers['diff'] if comb else tf_buffers
                 self.diff_kpcn = DKPCN(
                     _tf_buffers, patch_size, patch_size, layers_config, is_training,
-                    learning_rate, summary_dir, scope='diffuse', save_best=save_best, fp16=self.fp16)
+                    learning_rate, summary_dir, scope='diffuse', save_best=save_best,
+                    fp16=self.fp16, clip_by_global_norm=clip_by_global_norm)
 
             if train_spec:
                 spec_checkpoint_dir = os.path.join(checkpoint_dir, 'spec')
@@ -154,11 +158,13 @@ class Denoiser(object):
                 _tf_buffers = tf_buffers['spec'] if comb else tf_buffers
                 self.spec_kpcn = DKPCN(
                     _tf_buffers, patch_size, patch_size, layers_config, is_training,
-                    learning_rate, summary_dir, scope='specular', save_best=save_best, fp16=self.fp16)
+                    learning_rate, summary_dir, scope='specular', save_best=save_best,
+                    fp16=self.fp16, clip_by_global_norm=clip_by_global_norm)
 
             if comb:
                 self.comb_kpcn      = CombinedModel(
-                    self.diff_kpcn, self.spec_kpcn, tf_buffers['comb'], self.eps, learning_rate, summary_dir)
+                    self.diff_kpcn, self.spec_kpcn, tf_buffers['comb'], self.eps,
+                    learning_rate, summary_dir, clip_by_global_norm=clip_by_global_norm)
                 comb_checkpoint_dir = os.path.join(checkpoint_dir, 'comb')
                 restore_path        = (diff_restore_path, spec_restore_path)
                 self._training_loop(sess, self.comb_kpcn, init_ops['comb_train'], init_ops['comb_val'],
@@ -422,6 +428,8 @@ class Denoiser(object):
         if type(learning_rate) == str:
             learning_rate = eval(learning_rate)
 
+        clip_by_global_norm = config['train_params'].get('clip_by_global_norm', False)
+
         tf_config = tf.ConfigProto(
             device_count={'GPU': 1}, allow_soft_placement=True)
         with tf.Session(config=tf_config) as sess:
@@ -456,8 +464,6 @@ class Denoiser(object):
                 if config['data']['clip_ims']:
                     input_buffers['diffuse'] = du.clip_and_gamma_correct(input_buffers['diffuse'])
                     input_buffers['specular'] = du.clip_and_gamma_correct(input_buffers['specular'])
-                    # input_buffers['diffuse'] = np.clip(input_buffers['diffuse'], 0.0, 1.0)
-                    # input_buffers['specular'] = np.clip(input_buffers['specular'], 0.0, 1.0)
 
                 # preprocess
                 du.preprocess_diffuse(input_buffers, self.eps)
@@ -486,10 +492,12 @@ class Denoiser(object):
                     }
                     self.diff_kpcn = DKPCN(
                         tf_placeholders, patch_size, patch_size, layers_config,
-                        is_training, learning_rate, summary_dir, scope='diffuse', fp16=self.fp16)
+                        is_training, learning_rate, summary_dir, scope='diffuse',
+                        fp16=self.fp16, clip_by_global_norm=clip_by_global_norm)
                     self.spec_kpcn = DKPCN(
                         tf_placeholders, patch_size, patch_size, layers_config,
-                        is_training, learning_rate, summary_dir, scope='specular', fp16=self.fp16)
+                        is_training, learning_rate, summary_dir, scope='specular',
+                        fp16=self.fp16, clip_by_global_norm=clip_by_global_norm)
                     diff_restore_path = config['kpcn']['diff'].get('restore_path', '')
                     spec_restore_path = config['kpcn']['spec'].get('restore_path', '')
 

@@ -298,13 +298,9 @@ def make_decode(mode, tf_dtype, buffer_h, buffer_w, eps, clip_ims):
             if diff_or_comb:
                 p['diffuse']    = tf_clip_and_gamma_correct(p['diffuse'])
                 p['gt_diffuse'] = tf_clip_and_gamma_correct(p['gt_diffuse'])
-                # p['diffuse']     = tf.clip_by_value(p['diffuse'], 0.0, 1.0)
-                # p['gt_diffuse']  = tf.clip_by_value(p['gt_diffuse'], 0.0, 1.0)
             if spec_or_comb:
                 p['specular']    = tf_clip_and_gamma_correct(p['specular'])
                 p['gt_specular'] = tf_clip_and_gamma_correct(p['gt_specular'])
-                # p['specular']    = tf.clip_by_value(p['specular'], 0.0, 1.0)
-                # p['gt_specular'] = tf.clip_by_value(p['gt_specular'], 0.0, 1.0)
 
         # preprocess
         if mode == 'comb':
@@ -520,6 +516,7 @@ def preprocess_diffuse(buffers, eps):
 
 def preprocess_specular(buffers):
     """Apply logarithmic transform. Destructive."""
+    buffers['specular'] = np.maximum(buffers['specular'], 0.0)
     buffers['specular'] = np.log(buffers['specular'] + 1.0)
     mean_specular = np.mean(buffers['specular'], axis=-1)
     mean_specular = np.expand_dims(mean_specular, -1)
@@ -638,11 +635,11 @@ def tf_preprocess_diffuse_variance(diffuse_variance, albedo, eps):
     return tf.divide(diffuse_variance, tf.square(mean_albedo) + eps)
 
 def tf_preprocess_specular(specular):
+    specular = tf.maximum(specular, 0.0)
     return tf.log(specular + 1.0)
 
 def tf_preprocess_specular_variance(specular, specular_variance):
-    mean_specular = tf.reduce_mean(specular, axis=-1)
-    mean_specular = tf.expand_dims(mean_specular, -1)
+    mean_specular = tf.reduce_mean(specular, axis=-1, keepdims=True)
     return tf.divide(specular_variance, tf.square(mean_specular) + 1e-5)
 
 def tf_preprocess_depth(depth, depth_variance):

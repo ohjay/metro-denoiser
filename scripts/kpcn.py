@@ -17,7 +17,8 @@ class DKPCN(object):
     curr_index = -1
 
     def __init__(self, tf_buffers, buffer_h, buffer_w, layers_config,
-                 is_training, learning_rate, summary_dir, scope=None, save_best=False, fp16=False):
+                 is_training, learning_rate, summary_dir, scope=None,
+                 save_best=False, fp16=False, clip_by_global_norm=False):
 
         self.buffer_h = buffer_h
         self.buffer_w = buffer_w
@@ -93,6 +94,12 @@ class DKPCN(object):
                 opt = tf.train.AdamOptimizer(self.learning_rate)
             grads_and_vars = opt.compute_gradients(self.loss)
             grads_and_vars = filter(lambda gv: None not in gv, grads_and_vars)
+            grads, _vars = zip(*grads_and_vars)
+            self.gnorm = tf.global_norm(grads, name='grad_norm')
+            if clip_by_global_norm:  # empirically not helpful
+                grads, _ = tf.clip_by_global_norm(grads, 0.5, use_norm=self.gnorm)
+                grads_and_vars = zip(grads, _vars)
+            # clip by value
             grads_and_vars = [(tf.clip_by_value(grad, -1.0, 1.0), var) for grad, var in grads_and_vars]
             self.opt_op = opt.apply_gradients(grads_and_vars, global_step=self.global_step)
 
@@ -189,9 +196,10 @@ class DKPCN(object):
         return sess.run(self.out, feed_dict)
 
     def run_train_step(self, sess, iteration):
-        _, loss, loss_summary = sess.run([self.opt_op, self.loss, self.loss_summary])
+        _, loss, loss_summary, gnorm = sess.run(
+            [self.opt_op, self.loss, self.loss_summary, self.gnorm])
         self.train_writer.add_summary(loss_summary, iteration)
-        return loss
+        return loss, gnorm
 
     def run_validation(self, sess):
         return sess.run([self.loss, self.color, self.out, self.gt_out])
@@ -233,7 +241,10 @@ class DKPCN(object):
 
 class CombinedModel(object):
     """Diffuse + specular KPCNs."""
-    def __init__(self, diff_kpcn, spec_kpcn, tf_buffers_comb, eps, learning_rate, summary_dir):
+
+    def __init__(self, diff_kpcn, spec_kpcn, tf_buffers_comb, eps,
+                 learning_rate, summary_dir, clip_by_global_norm=False):
+
         self.diff_kpcn = diff_kpcn
         self.spec_kpcn = spec_kpcn
 
@@ -260,6 +271,12 @@ class CombinedModel(object):
         opt = tf.train.AdamOptimizer(self.learning_rate, epsilon=1e-4)
         grads_and_vars = opt.compute_gradients(self.loss)
         grads_and_vars = filter(lambda gv: None not in gv, grads_and_vars)
+        grads, _vars = zip(*grads_and_vars)
+        self.gnorm = tf.global_norm(grads, name='grad_norm')
+        if clip_by_global_norm:  # empirically not helpful
+            grads, _ = tf.clip_by_global_norm(grads, 0.5, use_norm=self.gnorm)
+            grads_and_vars = zip(grads, _vars)
+        # clip by value
         grads_and_vars = [(tf.clip_by_value(grad, -1.0, 1.0), var) for grad, var in grads_and_vars]
         self.opt_op = opt.apply_gradients(grads_and_vars, global_step=self.global_step)
         self.train_writer = tf.summary.FileWriter(
@@ -300,9 +317,10 @@ class CombinedModel(object):
         # }
         # _, loss, loss_summary = sess.run(
         #     [self.opt_op, self.loss, self.loss_summary], feed_dict)
-        _, loss, loss_summary = sess.run([self.opt_op, self.loss, self.loss_summary])
+        _, loss, loss_summary, gnorm = sess.run(
+            [self.opt_op, self.loss, self.loss_summary, self.gnorm])
         self.train_writer.add_summary(loss_summary, iteration)
-        return loss
+        return loss, gnorm
 
     def run_validation(self, sess):
         return sess.run([self.loss, self.diff_kpcn.color, self.out, self.gt_out])
