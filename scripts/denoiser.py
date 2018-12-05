@@ -123,6 +123,7 @@ class Denoiser(object):
         block_on_viz   = config['train_params'].get('block_on_viz', False)
         reset_lr       = config['train_params'].get('reset_lr', True)
         save_best      = config['train_params'].get('save_best', False)
+        valid_padding  = config['kpcn'].get('valid_padding', False)
 
         train_diff     = config['kpcn']['diff']['train_include']
         train_spec     = config['kpcn']['spec']['train_include']
@@ -150,7 +151,7 @@ class Denoiser(object):
                 self.diff_kpcn = DKPCN(
                     _tf_buffers, patch_size, patch_size, layers_config, is_training,
                     learning_rate, summary_dir, scope='diffuse', save_best=save_best,
-                    fp16=self.fp16, clip_by_global_norm=clip_by_global_norm)
+                    fp16=self.fp16, clip_by_global_norm=clip_by_global_norm, valid_padding=valid_padding)
 
             if train_spec:
                 spec_checkpoint_dir = os.path.join(checkpoint_dir, 'spec')
@@ -159,7 +160,7 @@ class Denoiser(object):
                 self.spec_kpcn = DKPCN(
                     _tf_buffers, patch_size, patch_size, layers_config, is_training,
                     learning_rate, summary_dir, scope='specular', save_best=save_best,
-                    fp16=self.fp16, clip_by_global_norm=clip_by_global_norm)
+                    fp16=self.fp16, clip_by_global_norm=clip_by_global_norm, valid_padding=valid_padding)
 
             if comb:
                 self.comb_kpcn      = CombinedModel(
@@ -425,6 +426,7 @@ class Denoiser(object):
         write_error_ims = config['evaluate']['write_error_ims']
         viz_kernels     = config['evaluate'].get('viz_kernels', False)
         clip_ims        = config['data']['clip_ims']
+        valid_padding   = config['kpcn'].get('valid_padding', False)
 
         if type(learning_rate) == str:
             learning_rate = eval(learning_rate)
@@ -484,11 +486,11 @@ class Denoiser(object):
                     self.diff_kpcn = DKPCN(
                         tf_placeholders, patch_size, patch_size, layers_config,
                         is_training, learning_rate, summary_dir, scope='diffuse',
-                        fp16=self.fp16, clip_by_global_norm=clip_by_global_norm)
+                        fp16=self.fp16, clip_by_global_norm=clip_by_global_norm, valid_padding=valid_padding)
                     self.spec_kpcn = DKPCN(
                         tf_placeholders, patch_size, patch_size, layers_config,
                         is_training, learning_rate, summary_dir, scope='specular',
-                        fp16=self.fp16, clip_by_global_norm=clip_by_global_norm)
+                        fp16=self.fp16, clip_by_global_norm=clip_by_global_norm, valid_padding=valid_padding)
                     diff_restore_path = config['kpcn']['diff'].get('restore_path', '')
                     spec_restore_path = config['kpcn']['spec'].get('restore_path', '')
 

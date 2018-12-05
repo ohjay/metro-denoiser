@@ -19,12 +19,12 @@ class DKPCN(object):
 
     def __init__(self, tf_buffers, buffer_h, buffer_w, layers_config,
                  is_training, learning_rate, summary_dir, scope=None,
-                 save_best=False, fp16=False, clip_by_global_norm=False):
+                 save_best=False, fp16=False, clip_by_global_norm=False, valid_padding=False):
 
         self.buffer_h = buffer_h
         self.buffer_w = buffer_w
         self.is_training = is_training
-        self.valid_padding = False and self.is_training
+        self.valid_padding = valid_padding and self.is_training
 
         if scope is None:
             DKPCN.curr_index += 1
