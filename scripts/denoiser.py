@@ -591,36 +591,42 @@ class Denoiser(object):
                             '_05_perceptual_spec_error.jpg'), perceptual_spec_error)
 
                 if viz_kernels:
-                    # get kernels for 10x10 region at random location
-                    y = np.random.randint(5 + ks // 2, h - 5 - ks // 2)
-                    x = np.random.randint(5 + ks // 2, w - 5 - ks // 2)
+                    # get kernels for 6x6 region at random location
+                    y = np.random.randint(3 + ks // 2, h - 3 - ks // 2)
+                    x = np.random.randint(3 + ks // 2, w - 3 - ks // 2)
                     if x < w // 2:
-                        _diff_in = {c: data[:, y-5-ks//2:y+5+ks//2, x-5-ks//2:x+5+ks//2, :] \
-                            for c, data in l_diff_in.items()}
-                        _spec_in = {c: data[:, y-5-ks//2:y+5+ks//2, x-5-ks//2:x+5+ks//2, :] \
-                            for c, data in l_spec_in.items()}
+                        _diff_in = l_diff_in
+                        _spec_in = l_spec_in
                     else:
-                        _diff_in = {c: data[:, y-5-ks//2:y+5+ks//2, -(w-x)-5-ks//2:-(w-x)+5+ks//2, :] \
-                            for c, data in r_diff_in.items()}
-                        _spec_in = {c: data[:, y-5-ks//2:y+5+ks//2, -(w-x)-5-ks//2:-(w-x)+5+ks//2, :] \
-                            for c, data in r_spec_in.items()}
+                        _diff_in = r_diff_in
+                        _spec_in = r_spec_in
 
-                    diff_kernels = sess.run(self.diff_kpcn.out_kernels, feed_dict=_diff_in)[0]  # (ph, pw, ks * ks)
-                    ph, pw       = diff_kernels.shape[0], diff_kernels.shape[1]
-                    diff_kernels = diff_kernels[ph//2-5:ph//2+5, pw//2-5:pw//2+5, :]
-                    diff_kernels = np.reshape(diff_kernels, (-1, ks, ks))  # (10 * 10, ks, ks)
+                    diff_kernels = self.diff_kpcn.run(sess, _diff_in, self.diff_kpcn.out_kernels)[0]
+                    if x < w // 2:
+                        diff_kernels = diff_kernels[y-3:y+3, x-3:x+3, :]
+                    else:
+                        diff_kernels = diff_kernels[y-3:y+3, -(w-x)-3:-(w-x)+3, :]
+                    diff_kernels = np.reshape(diff_kernels, (-1, ks, ks))  # (6 * 6, ks, ks)
+                    diff_kernels = du.clip_and_gamma_correct(diff_kernels)
 
-                    spec_kernels = sess.run(self.spec_in.out_kernels, feed_dict=_spec_in)[0]  # (ph, pw, ks * ks)
-                    spec_kernels = spec_kernels[ph//2-5:ph//2+5, pw//2-5:pw//2+5, :]
-                    spec_kernels = np.reshape(spec_kernels, (-1, ks, ks))  # (10 * 10, ks, ks)
+                    spec_kernels = self.spec_kpcn.run(sess, _spec_in, self.spec_kpcn.out_kernels)[0]
+                    if x < w // 2:
+                        spec_kernels = spec_kernels[y-3:y+3, x-3:x+3, :]
+                    else:
+                        spec_kernels = spec_kernels[y-3:y+3, -(w-x)-3:-(w-x)+3, :]
+                    spec_kernels = np.reshape(spec_kernels, (-1, ks, ks))  # (6 * 6, ks, ks)
+                    spec_kernels = du.clip_and_gamma_correct(spec_kernels)
 
-                    rgb = np.concatenate([input_buffers['R'], input_buffers['G'], input_buffers['B']], axis=-1)
+                    rgb = du.clip_and_gamma_correct(np.concatenate(
+                        [input_buffers['R'], input_buffers['G'], input_buffers['B']], axis=-1))
                     rgb_highlight = rgb * 0.3
-                    rgb_highlight[y-5:y+5, x-5:x+5, :] = rgb[y-5:y+5, x-5:x+5, :] * 2.0
+                    rgb_highlight[y-3:y+3, x-3:x+3, :] = rgb[y-3:y+3, x-3:x+3, :] * 2.0
+                    rgb_highlight = rgb_highlight[
+                        max(y-20,0):min(y+20,h), max(x-20,0):min(x+20,rgb.shape[1]), :]
 
                     du.show_multiple(rgb_highlight, row_max=1, block_on_viz=True)
-                    du.show_multiple(diff_kernels,  block_on_viz=True)
-                    du.show_multiple(spec_kernels,  block_on_viz=True)
+                    du.show_multiple(*diff_kernels, block_on_viz=True)
+                    du.show_multiple(*spec_kernels, block_on_viz=True)
 
     def compute_error(self, config):
         self.denoise(config, compute_error=True)

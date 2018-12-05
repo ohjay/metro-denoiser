@@ -6,8 +6,8 @@ import pickle
 import random
 import OpenEXR
 import numpy as np
-from math import sqrt
 import tensorflow as tf
+from math import sqrt, ceil
 from scipy.misc import imsave
 import matplotlib.pyplot as plt
 from scipy.signal import convolve
@@ -677,7 +677,7 @@ def show_multiple(*ims, **kwargs):
     Assumes that each image in IMS is either
     an [h, w, c]-array or an [n, h, w, c]-array.
     """
-    row_max      = kwargs.get('row_max', max(3, int(sqrt(len(ims))) + 1))
+    row_max      = kwargs.get('row_max', max(3, int(ceil(sqrt(len(ims))))))
     batch_max    = kwargs.get('batch_max', 5)  # viz at most 5 examples per batch
     block_on_viz = kwargs.get('block_on_viz', False)
 

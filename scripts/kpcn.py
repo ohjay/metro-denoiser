@@ -185,7 +185,7 @@ class DKPCN(object):
                 - alpha * upsampled(downsampled(denoised_fine)) \
                 + alpha * upsampled(denoised_coarse)
 
-    def run(self, sess, batched_buffers):
+    def run(self, sess, batched_buffers, tensor=None):
         feed_dict = {
             self.color: batched_buffers['color'],
             self.grad_x: batched_buffers['grad_x'],
@@ -193,7 +193,9 @@ class DKPCN(object):
             self.var_color: batched_buffers['var_color'],
             self.var_features: batched_buffers['var_features'],
         }
-        return sess.run(self.out, feed_dict)
+        if tensor is None:
+            tensor = self.out  # tensor to evaluate
+        return sess.run(tensor, feed_dict)
 
     def run_train_step(self, sess, iteration):
         _, loss, loss_summary, gnorm = sess.run(
@@ -248,11 +250,6 @@ class CombinedModel(object):
         self.diff_kpcn = diff_kpcn
         self.spec_kpcn = spec_kpcn
 
-        # _dt = tf.float32
-        # _bh = self.diff_kpcn.buffer_h
-        # _bw = self.diff_kpcn.buffer_w
-        # self.albedo = tf.placeholder(_dt, shape=(None, _bh, _bw, 3), name='albedo')
-        # self.gt_out = tf.placeholder(_dt, shape=(None, _bh, _bw, 3), name='gt_out')
         self.albedo = tf_buffers_comb['albedo']
         self.gt_out = tf_buffers_comb['gt_out']
 
@@ -284,7 +281,7 @@ class CombinedModel(object):
         self.validation_writer = tf.summary.FileWriter(
             get_run_dir(os.path.join(summary_dir, 'validation')))
 
-    def run(self, sess, diff_batched_buffers, spec_batched_buffers, batched_albedo):
+    def run(self, sess, diff_batched_buffers, spec_batched_buffers, batched_albedo, tensor=None):
         feed_dict = {
             self.diff_kpcn.color:        diff_batched_buffers['color'],
             self.diff_kpcn.grad_x:       diff_batched_buffers['grad_x'],
@@ -298,25 +295,11 @@ class CombinedModel(object):
             self.spec_kpcn.var_features: spec_batched_buffers['var_features'],
             self.albedo:                 batched_albedo,
         }
-        return sess.run(self.out, feed_dict)
+        if tensor is None:
+            tensor = self.out  # tensor to evaluate
+        return sess.run(tensor, feed_dict)
 
     def run_train_step(self, sess, iteration):
-        # feed_dict = {
-        #     self.diff_kpcn.color:        diff_batched_buffers['color'],
-        #     self.diff_kpcn.grad_x:       diff_batched_buffers['grad_x'],
-        #     self.diff_kpcn.grad_y:       diff_batched_buffers['grad_y'],
-        #     self.diff_kpcn.var_color:    diff_batched_buffers['var_color'],
-        #     self.diff_kpcn.var_features: diff_batched_buffers['var_features'],
-        #     self.spec_kpcn.color:        spec_batched_buffers['color'],
-        #     self.spec_kpcn.grad_x:       spec_batched_buffers['grad_x'],
-        #     self.spec_kpcn.grad_y:       spec_batched_buffers['grad_y'],
-        #     self.spec_kpcn.var_color:    spec_batched_buffers['var_color'],
-        #     self.spec_kpcn.var_features: spec_batched_buffers['var_features'],
-        #     self.albedo:                 batched_albedo,
-        #     self.gt_out:                 gt_out,
-        # }
-        # _, loss, loss_summary = sess.run(
-        #     [self.opt_op, self.loss, self.loss_summary], feed_dict)
         _, loss, loss_summary, gnorm = sess.run(
             [self.opt_op, self.loss, self.loss_summary, self.gnorm])
         self.train_writer.add_summary(loss_summary, iteration)
