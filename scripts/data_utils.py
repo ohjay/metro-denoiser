@@ -13,6 +13,8 @@ import matplotlib.pyplot as plt
 from scipy.signal import convolve
 from scipy.ndimage.filters import gaussian_filter
 
+MAX_DEPTH = 20.0  # empirical
+
 # ===============================================
 # EXR I/O
 # ===============================================

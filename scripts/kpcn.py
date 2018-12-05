@@ -1,6 +1,7 @@
 import os
 from math import sqrt
 import tensorflow as tf
+from numbers import Number
 
 from data_utils import get_run_dir, tf_center_crop
 from data_utils import tf_postprocess_diffuse, tf_postprocess_specular
@@ -35,14 +36,15 @@ class DKPCN(object):
                 # gradients (color, surface normals, albedo, depth)
                 self.grad_x = tf.identity(tf_buffers['grad_x'], name='grad_x')  # (?, h, w, 10)
                 self.grad_y = tf.identity(tf_buffers['grad_y'], name='grad_y')  # (?, h, w, 10)
-                # variance
+                # rel variance
                 self.var_color = tf.identity(tf_buffers['var_color'], name='var_color')  # (?, h, w, 1)
                 self.var_features = tf.identity(tf_buffers['var_features'], name='var_features')  # (?, h, w, 3)
 
             out = tf.concat((
                 self.color, self.grad_x, self.grad_y, self.var_color, self.var_features), axis=3)
 
-            for i, layer in enumerate(layers_config):
+            i = 0
+            for layer in layers_config:
                 with tf.variable_scope('layer%d' % i):
                     try:
                         activation = getattr(tf.nn, layer.get('activation', ''))
@@ -54,12 +56,16 @@ class DKPCN(object):
                             out, layer['num_outputs'], layer['kernel_size'],
                             strides=layer['stride'], padding=padding, activation=activation, name='conv2d')
                     elif layer['type'] == 'residual_block':
-                        dropout_keep_prob = layer['dropout_keep_prob']
-                        out = self._residual_block(out, i, dropout_keep_prob, self.is_training)
+                        dropout_keep_prob = layer.get('dropout_keep_prob', None)
+                        chain = layer.get('chain', 1)
+                        for j in range(chain):
+                            out = self._residual_block(out, i + j, dropout_keep_prob, self.is_training)
+                        i += chain - 1
                     elif layer['type'] == 'batch_normalization':
                         out = tf.layers.batch_normalization(out, training=self.is_training, name='batch_normalization')
                     else:
                         raise ValueError('unsupported DKPCN layer type')
+                i += 1
 
             if layer['num_outputs'] == 3:
                 # DPCN
@@ -165,7 +171,8 @@ class DKPCN(object):
             out = tf.layers.conv2d(
                 out, filters=100, kernel_size=3, strides=1, padding='same', activation=None)
             out = tf.nn.relu(out)
-            out = tf.layers.dropout(out, dropout_keep_prob, training=is_training)
+            if isinstance(dropout_keep_prob, Number):
+                out = tf.layers.dropout(out, dropout_keep_prob, training=is_training)
             out = tf.layers.conv2d(
                 out, filters=100, kernel_size=3, strides=1, padding='same', activation=None)
         return _in + out

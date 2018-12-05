@@ -3,7 +3,7 @@ op: train
 
 data:
   data_dir: /media/owen/302371f7-852e-4f78-94e6-4d3ffebda36e/deep_learning_denoising/renderings
-  tfrecord_dir: /media/owen/302371f7-852e-4f78-94e6-4d3ffebda36e/renderings_tfrecords_partition_diff
+  tfrecord_dir: /media/owen/302371f7-852e-4f78-94e6-4d3ffebda36e/renderings_tfrecords_partition
   scenes:
     - bathroom2
     - car2
@@ -23,7 +23,7 @@ data:
   parse_step: 1
   parse_shuffle: True
   file_example_limit: 300
-  patch_size: 125
+  patch_size: 65  # 125
   patches_per_im: 500
   save_debug_ims: True
   save_debug_ims_every: 10
@@ -57,6 +57,7 @@ kpcn:
   spec:
     train_include: False
     # restore_path: /home/owen/workspace/metro/scripts/checkpoints/spec_saved/var-409999
+    restore_path: /home/owen/workspace/metro/scripts/checkpoints/spec/var-3999
 
 evaluate:
   im_path: /media/owen/302371f7-852e-4f78-94e6-4d3ffebda36e/deep_learning_denoising/renderings/bathroom2/18889126-00256spp.exr
@@ -80,31 +81,8 @@ layers:
     activation: x
 
   - type: residual_block
-    dropout_keep_prob: 0.7
-
-  - type: residual_block
-    dropout_keep_prob: 0.7
-
-  - type: residual_block
-    dropout_keep_prob: 0.5
-
-  - type: residual_block
-    dropout_keep_prob: 0.5
-
-  - type: residual_block
-    dropout_keep_prob: 0.5
-
-  - type: residual_block
-    dropout_keep_prob: 0.5
-
-  - type: residual_block
-    dropout_keep_prob: 0.5
-
-  - type: residual_block
-    dropout_keep_prob: 0.5
-
-  - type: residual_block
-    dropout_keep_prob: 0.5
+    dropout_keep_prob: 0.9  # to omit, use "x"
+    chain: 24
 
   - type: conv2d
     num_outputs: 100
