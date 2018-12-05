@@ -190,9 +190,12 @@ class Denoiser(object):
 
         train_filenames = []
         val_filenames   = []
-        for scene in scenes:
-            train_filenames.extend(glob.glob(os.path.join(tfrecord_dir, scene, 'train', 'data*.tfrecords')))
-            val_filenames.extend(glob.glob(os.path.join(tfrecord_dir, scene, 'validation', 'data*.tfrecords')))
+
+        all_tfrds = tfrecord_dir if type(tfrecord_dir) == list else [tfrecord_dir]
+        for tfrd in all_tfrds:
+            for scene in scenes:
+                train_filenames.extend(glob.glob(os.path.join(tfrd, scene, 'train', 'data*.tfrecords')))
+                val_filenames.extend(glob.glob(os.path.join(tfrd, scene, 'validation', 'data*.tfrecords')))
 
         def shuffled_dataset(filenames):
             dataset = tf.data.Dataset.from_tensor_slices(filenames)
@@ -343,6 +346,9 @@ class Denoiser(object):
         file_example_limit          = config['data'].get('file_example_limit', 1e5)
         use_error_maps_for_sampling = config['data'].get('use_error_maps_for_sampling', False)
         out_dir                     = config['evaluate']['out_dir']
+
+        if type(tfrecord_dir) == list:
+            tfrecord_dir = tfrecord_dir[0]
 
         # load error maps
         error_maps = None

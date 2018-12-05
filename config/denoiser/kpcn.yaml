@@ -3,7 +3,11 @@ op: train
 
 data:
   data_dir: /media/owen/302371f7-852e-4f78-94e6-4d3ffebda36e/deep_learning_denoising/renderings
-  tfrecord_dir: /media/owen/302371f7-852e-4f78-94e6-4d3ffebda36e/renderings_tfrecords_partition
+  tfrecord_dir:
+    - /media/owen/302371f7-852e-4f78-94e6-4d3ffebda36e/renderings_tfrecords
+    - /media/owen/302371f7-852e-4f78-94e6-4d3ffebda36e/renderings_tfrecords_partition
+    - /media/owen/302371f7-852e-4f78-94e6-4d3ffebda36e/renderings_tfrecords_partition_128
+    - /media/owen/302371f7-852e-4f78-94e6-4d3ffebda36e/renderings_tfrecords_partition_spec
   scenes:
     - bathroom2
     - car2
@@ -26,7 +30,7 @@ data:
   patch_size: 65  # 125
   patches_per_im: 500
   save_debug_ims: True
-  save_debug_ims_every: 10
+  save_debug_ims_every: 50
   color_var_weight: 1.0
   normal_var_weight: 1.0
   shuffle_buffer_size_limit: 5000
@@ -58,6 +62,7 @@ kpcn:
     train_include: False
     # restore_path: /home/owen/workspace/metro/scripts/checkpoints/spec_saved/var-409999
     restore_path: /home/owen/workspace/metro/scripts/checkpoints/spec/var-3999
+  valid_padding: False  # during training only
 
 evaluate:
   im_path: /media/owen/302371f7-852e-4f78-94e6-4d3ffebda36e/deep_learning_denoising/renderings/bathroom2/18889126-00256spp.exr
