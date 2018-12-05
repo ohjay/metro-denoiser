@@ -317,9 +317,9 @@ def make_decode(mode, tf_dtype, buffer_h, buffer_w, eps, clip_ims):
         p['depth'], p['depthVariance'] = tf_preprocess_depth(p['depth'], p['depthVariance'])
 
         variance_features = tf.concat([
-            p['normalVariance'],
-            p['albedoVariance'],
-            p['depthVariance']], axis=-1)
+            tf_to_rel_variance(p['normalVariance'], p['normal']),
+            tf_to_rel_variance(p['albedoVariance'], p['albedo']),
+            tf_to_rel_variance(p['depthVariance'],  p['depth'])], axis=-1)
 
         if mode in {'diff', 'spec'}:
             return (
@@ -504,6 +504,20 @@ def generate_sampling_map(error_map, patch_size):
 # PRE/POST-PROCESSING (NUMPY)
 # ===============================================
 
+def to_rel_variance(var, _buffer, clip=False):
+    """Convert variance to relative variance."""
+    rel_var = var / (np.mean(_buffer, axis=-1, keepdims=True) ** 2 + 1e-5)
+    if clip:
+        rel_var = np.clip(rel_var, 0.0, 1.0)
+    return rel_var
+
+def log_transform(im):
+    im = np.maximum(im, 0.0)
+    return np.log(im + 1.0)
+
+def inv_log_transform(im):
+    return np.exp(im) - 1.0
+
 def clip_and_gamma_correct(im):
     assert im.dtype != np.uint8
     return np.clip(im, 0.0, 1.0) ** (1.0 / 2.2)
@@ -511,17 +525,16 @@ def clip_and_gamma_correct(im):
 def preprocess_diffuse(buffers, eps):
     """Factor out albedo. Destructive."""
     buffers['diffuse'] /= buffers['albedo'] + eps
-    mean_albedo = np.mean(buffers['albedo'], axis=-1)
-    mean_albedo = np.expand_dims(mean_albedo, -1)
+    buffers['diffuse'] = log_transform(buffers['diffuse'])
+    mean_albedo = np.mean(buffers['albedo'], axis=-1, keepdims=True)
     buffers['diffuseVariance'] /= np.square(mean_albedo + eps)
 
 def preprocess_specular(buffers):
     """Apply logarithmic transform. Destructive."""
-    buffers['specular'] = np.maximum(buffers['specular'], 0.0)
-    buffers['specular'] = np.log(buffers['specular'] + 1.0)
-    mean_specular = np.mean(buffers['specular'], axis=-1)
-    mean_specular = np.expand_dims(mean_specular, -1)
+    mean_specular = np.mean(
+        1.0 + np.maximum(buffers['specular'], 0.0), axis=-1, keepdims=True)
     buffers['specularVariance'] /= np.square(mean_specular) + 1e-5
+    buffers['specular'] = log_transform(buffers['specular'])
 
 def preprocess_depth(buffers):
     """Scale depth to range [0, 1]. Destructive."""
@@ -571,15 +584,28 @@ def compute_buffer_gradients(buffers):
     }
     return grad_y, grad_x
 
-def make_network_inputs(buffers):
-    """Takes preprocessed buffers (for a single image, i.e. shapes are HWC)
+def make_network_inputs(buffers, clip_ims, eps):
+    """Takes buffers (for a single image, i.e. shapes are HWC)
     and constructs both diffuse and specular KPCN inputs.
 
     This function does not split the image into patches.
     If such behavior is desired, it can be applied after this function.
     """
-    var_features = np.concatenate(
-        [buffers['normalVariance'], buffers['albedoVariance'], buffers['depthVariance']], axis=-1)
+    # clip
+    if clip_ims:
+        buffers['diffuse']  = clip_and_gamma_correct(buffers['diffuse'])
+        buffers['specular'] = clip_and_gamma_correct(buffers['specular'])
+
+    # preprocess
+    preprocess_diffuse(buffers, eps)
+    preprocess_specular(buffers)
+    preprocess_depth(buffers)
+
+    var_features = np.concatenate([
+        to_rel_variance(buffers['normalVariance'], buffers['normal']),
+        to_rel_variance(buffers['albedoVariance'], buffers['albedo']),
+        to_rel_variance(buffers['depthVariance'],  buffers['depth']),
+    ], axis=-1)
 
     grad_y, grad_x = compute_buffer_gradients(buffers)
     grad_y_features = np.concatenate(
@@ -612,32 +638,43 @@ def make_network_inputs(buffers):
 
 def postprocess_diffuse(out_diffuse, albedo, eps):
     """Multiply back albedo."""
-    return out_diffuse * (albedo + eps)
+    return inv_log_transform(out_diffuse) * (albedo + eps)
 
 def postprocess_specular(out_specular):
     """Apply exponential transform."""
-    return np.exp(out_specular) - 1.0
+    return inv_log_transform(out_specular)
 
 # ===============================================
 # PRE/POST-PROCESSING (TENSORFLOW)
 # ===============================================
 
+def tf_to_rel_variance(var, _buffer, clip=False):
+    """Convert variance to relative variance."""
+    rel_var = var / (tf.square(
+        tf.reduce_mean(_buffer, axis=-1, keepdims=True)) + 1e-5)
+    if clip:
+        rel_var = tf.clip_by_value(rel_var, 0.0, 1.0)
+    return rel_var
+
 def tf_log_transform(im):
+    im = tf.maximum(im, 0.0)
     return tf.log(im + 1.0)
+
+def tf_inv_log_transform(im):
+    return tf.exp(im) - 1.0
 
 def tf_clip_and_gamma_correct(im):
     return tf.pow(tf.clip_by_value(im, 0.0, 1.0), 1.0 / 2.2)
 
 def tf_preprocess_diffuse(diffuse, albedo, eps):
-    return tf.divide(diffuse, albedo + eps)
+    return tf_log_transform(tf.divide(diffuse, albedo + eps))
 
 def tf_preprocess_diffuse_variance(diffuse_variance, albedo, eps):
     mean_albedo = tf.reduce_mean(albedo, axis=-1, keepdims=True)
     return tf.divide(diffuse_variance, tf.square(mean_albedo) + eps)
 
 def tf_preprocess_specular(specular):
-    specular = tf.maximum(specular, 0.0)
-    return tf.log(specular + 1.0)
+    return tf_log_transform(specular)
 
 def tf_preprocess_specular_variance(specular, specular_variance):
     mean_specular = tf.reduce_mean(specular, axis=-1, keepdims=True)
@@ -653,10 +690,10 @@ def tf_preprocess_depth(depth, depth_variance):
     return depth, depth_variance
 
 def tf_postprocess_diffuse(out_diffuse, albedo, eps):
-    return tf.multiply(out_diffuse, albedo + eps)
+    return tf.multiply(tf_inv_log_transform(out_diffuse), albedo + eps)
 
 def tf_postprocess_specular(out_specular):
-    return tf.exp(out_specular) - 1.0
+    return tf_inv_log_transform(out_specular)
 
 def tf_center_crop(im, y_extent, x_extent):
     _, im_h, im_w, _ = im.get_shape().as_list()

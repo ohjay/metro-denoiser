@@ -424,6 +424,7 @@ class Denoiser(object):
         out_dir         = config['evaluate']['out_dir']
         write_error_ims = config['evaluate']['write_error_ims']
         viz_kernels     = config['evaluate'].get('viz_kernels', False)
+        clip_ims        = config['data']['clip_ims']
 
         if type(learning_rate) == str:
             learning_rate = eval(learning_rate)
@@ -460,18 +461,8 @@ class Denoiser(object):
                 h, w = input_buffers['diffuse'].shape[:2]
                 ks = int(sqrt(layers_config[-1]['num_outputs']))
 
-                # clip
-                if config['data']['clip_ims']:
-                    input_buffers['diffuse'] = du.clip_and_gamma_correct(input_buffers['diffuse'])
-                    input_buffers['specular'] = du.clip_and_gamma_correct(input_buffers['specular'])
-
-                # preprocess
-                du.preprocess_diffuse(input_buffers, self.eps)
-                du.preprocess_specular(input_buffers)
-                du.preprocess_depth(input_buffers)
-
                 # make network inputs
-                diff_in, spec_in = du.make_network_inputs(input_buffers)
+                diff_in, spec_in = du.make_network_inputs(input_buffers, clip_ims, self.eps)
 
                 # split image into l/r sub-images (with overlap)
                 # because my GPU doesn't have enough memory to deal with the whole image at once
