@@ -145,16 +145,16 @@ class Denoiser(object):
                 diff_restore_path   = config['kpcn']['diff'].get('restore_path', '')
                 _tf_buffers = tf_buffers['diff'] if comb else tf_buffers
                 self.diff_kpcn = DKPCN(
-                    _tf_buffers, patch_size, patch_size, layers_config,
-                    is_training, learning_rate, summary_dir, scope='diffuse', save_best=save_best)
+                    _tf_buffers, patch_size, patch_size, layers_config, is_training,
+                    learning_rate, summary_dir, scope='diffuse', save_best=save_best, fp16=self.fp16)
 
             if train_spec:
                 spec_checkpoint_dir = os.path.join(checkpoint_dir, 'spec')
                 spec_restore_path   = config['kpcn']['spec'].get('restore_path', '')
                 _tf_buffers = tf_buffers['spec'] if comb else tf_buffers
                 self.spec_kpcn = DKPCN(
-                    _tf_buffers, patch_size, patch_size, layers_config,
-                    is_training, learning_rate, summary_dir, scope='specular', save_best=save_best)
+                    _tf_buffers, patch_size, patch_size, layers_config, is_training,
+                    learning_rate, summary_dir, scope='specular', save_best=save_best, fp16=self.fp16)
 
             if comb:
                 self.comb_kpcn      = CombinedModel(
@@ -417,6 +417,7 @@ class Denoiser(object):
         gt_spp          = config['data']['gt_spp']
         out_dir         = config['evaluate']['out_dir']
         write_error_ims = config['evaluate']['write_error_ims']
+        viz_kernels     = config['evaluate'].get('viz_kernels', False)
 
         if type(learning_rate) == str:
             learning_rate = eval(learning_rate)
@@ -485,10 +486,10 @@ class Denoiser(object):
                     }
                     self.diff_kpcn = DKPCN(
                         tf_placeholders, patch_size, patch_size, layers_config,
-                        is_training, learning_rate, summary_dir, scope='diffuse')
+                        is_training, learning_rate, summary_dir, scope='diffuse', fp16=self.fp16)
                     self.spec_kpcn = DKPCN(
                         tf_placeholders, patch_size, patch_size, layers_config,
-                        is_training, learning_rate, summary_dir, scope='specular')
+                        is_training, learning_rate, summary_dir, scope='specular', fp16=self.fp16)
                     diff_restore_path = config['kpcn']['diff'].get('restore_path', '')
                     spec_restore_path = config['kpcn']['spec'].get('restore_path', '')
 
@@ -580,6 +581,38 @@ class Denoiser(object):
                             du.clip_and_gamma_correct(gt_buffers['specular']))
                         imsave(os.path.join(out_dir, _input_id + \
                             '_05_perceptual_spec_error.jpg'), perceptual_spec_error)
+
+                if viz_kernels:
+                    # get kernels for 10x10 region at random location
+                    y = np.random.randint(5 + ks // 2, h - 5 - ks // 2)
+                    x = np.random.randint(5 + ks // 2, w - 5 - ks // 2)
+                    if x < w // 2:
+                        _diff_in = {c: data[:, y-5-ks//2:y+5+ks//2, x-5-ks//2:x+5+ks//2, :] \
+                            for c, data in l_diff_in.items()}
+                        _spec_in = {c: data[:, y-5-ks//2:y+5+ks//2, x-5-ks//2:x+5+ks//2, :] \
+                            for c, data in l_spec_in.items()}
+                    else:
+                        _diff_in = {c: data[:, y-5-ks//2:y+5+ks//2, -(w-x)-5-ks//2:-(w-x)+5+ks//2, :] \
+                            for c, data in r_diff_in.items()}
+                        _spec_in = {c: data[:, y-5-ks//2:y+5+ks//2, -(w-x)-5-ks//2:-(w-x)+5+ks//2, :] \
+                            for c, data in r_spec_in.items()}
+
+                    diff_kernels = sess.run(self.diff_kpcn.out_kernels, feed_dict=_diff_in)[0]  # (ph, pw, ks * ks)
+                    ph, pw       = diff_kernels.shape[0], diff_kernels.shape[1]
+                    diff_kernels = diff_kernels[ph//2-5:ph//2+5, pw//2-5:pw//2+5, :]
+                    diff_kernels = np.reshape(diff_kernels, (-1, ks, ks))  # (10 * 10, ks, ks)
+
+                    spec_kernels = sess.run(self.spec_in.out_kernels, feed_dict=_spec_in)[0]  # (ph, pw, ks * ks)
+                    spec_kernels = spec_kernels[ph//2-5:ph//2+5, pw//2-5:pw//2+5, :]
+                    spec_kernels = np.reshape(spec_kernels, (-1, ks, ks))  # (10 * 10, ks, ks)
+
+                    rgb = np.concatenate([input_buffers['R'], input_buffers['G'], input_buffers['B']], axis=-1)
+                    rgb_highlight = rgb * 0.3
+                    rgb_highlight[y-5:y+5, x-5:x+5, :] = rgb[y-5:y+5, x-5:x+5, :] * 2.0
+
+                    du.show_multiple(rgb_highlight, row_max=1, block_on_viz=True)
+                    du.show_multiple(diff_kernels,  block_on_viz=True)
+                    du.show_multiple(spec_kernels,  block_on_viz=True)
 
     def compute_error(self, config):
         self.denoise(config, compute_error=True)

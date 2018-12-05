@@ -17,7 +17,7 @@ class DKPCN(object):
     curr_index = -1
 
     def __init__(self, tf_buffers, buffer_h, buffer_w, layers_config,
-                 is_training, learning_rate, summary_dir, scope=None, save_best=False):
+                 is_training, learning_rate, summary_dir, scope=None, save_best=False, fp16=False):
 
         self.buffer_h = buffer_h
         self.buffer_w = buffer_w
@@ -86,7 +86,11 @@ class DKPCN(object):
             # optimization
             self.global_step = tf.Variable(0, trainable=False, name='global_step')
             self.learning_rate = tf.train.exponential_decay(learning_rate, self.global_step, 100000, 0.96)
-            opt = tf.train.AdamOptimizer(self.learning_rate, epsilon=1e-4)  # eps: https://stackoverflow.com/a/42077538
+            if fp16:
+                # eps: https://stackoverflow.com/a/42077538
+                opt = tf.train.AdamOptimizer(self.learning_rate, epsilon=1e-4)
+            else:
+                opt = tf.train.AdamOptimizer(self.learning_rate)
             grads_and_vars = opt.compute_gradients(self.loss)
             grads_and_vars = filter(lambda gv: None not in gv, grads_and_vars)
             grads_and_vars = [(tf.clip_by_value(grad, -1.0, 1.0), var) for grad, var in grads_and_vars]
