@@ -20,7 +20,7 @@ class DKPCN(object):
     def __init__(self, tf_buffers, buffer_h, buffer_w, layers_config,
                  is_training, learning_rate, summary_dir, scope=None,
                  save_best=False, fp16=False, clip_by_global_norm=False,
-                 valid_padding=False, asymmetric_loss=True, sess=None):
+                 valid_padding=False, asymmetric_loss=True, sess=None, reuse=False):
 
         self.buffer_h = buffer_h
         self.buffer_w = buffer_w
@@ -30,7 +30,7 @@ class DKPCN(object):
         if scope is None:
             DKPCN.curr_index += 1
         self.scope = scope or 'DKPCN_%d' % DKPCN.curr_index
-        with tf.variable_scope(self.scope, reuse=False):
+        with tf.variable_scope(self.scope, reuse=reuse):
             with tf.variable_scope('inputs'):
                 # color buffer
                 self.color = tf.identity(tf_buffers['color'], name='color')  # (?, h, w, 3)
@@ -204,21 +204,6 @@ class DKPCN(object):
                     out = tf.layers.dropout(out, 1.0 - dropout_keep_prob, training=is_training)
         return _in + out
 
-    def _scale_compositor(self, denoised_fine, denoised_coarse):
-        with tf.variable_scope('scale_compositor'):
-            alpha = tf.concat((denoised_fine, denoised_coarse), axis=-1)  # won't work if diff sizes?
-            alpha = tf.layers.conv2d(
-                alpha, filters=100, kernel_size=1, strides=1, padding='same', activation=None)
-            alpha = self._residual_block(alpha, 'sc1', 0.9, self.is_training)
-            alpha = self._residual_block(alpha, 'sc2', 0.9, self.is_training)
-            alpha = tf.layers.conv2d(
-                alpha, filters=1, kernel_size=1, strides=1, padding='same', activation=None)
-            alpha = tf.nn.sigmoid(alpha)
-            # blend fine and coarse images
-            return denoised_fine \
-                - alpha * upsampled(downsampled(denoised_fine)) \
-                + alpha * upsampled(denoised_coarse)
-
     def run(self, sess, batched_buffers, tensor=None):
         feed_dict = {
             self.color: batched_buffers['color'],
@@ -274,6 +259,108 @@ class DKPCN(object):
             else:
                 saver.restore(sess, restore_path)
             print('[+] `%s` network restored from `%s`.' % (self.scope, restore_path))
+
+class MultiscaleModel(object):
+    """Wrapper around a standard KPCN which combines results from three different scales."""
+
+    def __init__(self, tf_buffers, buffer_h, buffer_w, *args, **kwargs):
+
+        tf_buffers2 = self._resize_all(tf_buffers, buffer_h // 2, buffer_w // 2)
+        tf_buffers4 = self._resize_all(tf_buffers, buffer_h // 4, buffer_w // 4)
+
+        # fine to coarse
+        kwargs['reuse'] = True
+        self.kpcn1 = DKPCN(tf_buffers, buffer_h, buffer_w, *args, **kwargs)
+        self.kpcn2 = DKPCN(tf_buffers2, buffer_h // 2, buffer_w // 2, *args, **kwargs)
+        self.kpcn4 = DKPCN(tf_buffers4, buffer_h // 4, buffer_w // 4, *args, **kwargs)
+
+        self.denoised1 = tf.stop_gradient(self.kpcn1.out)
+        self.denoised2 = tf.stop_gradient(self.kpcn2.out)
+        self.denoised4 = tf.stop_gradient(self.kpcn4.out)
+
+        self.out = self._scale_compositor(self.denoised2, self.denoised4)
+        self.out = self._scale_compositor(self.denoised1, self.out)  # reuse vars, so same as first compositor
+
+        self.color = self.kpcn1.color
+        self.tvars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope='scale_compositor')
+        self.saver = tf.train.Saver(self.tvars, max_to_keep=5)
+
+        # optimization
+        # TODO
+
+    def run(self, sess, batched_buffers, tensor=None):
+        # TODO
+        feed_dict = {
+            self.color: batched_buffers['color'],
+            self.grad_x: batched_buffers['grad_x'],
+            self.grad_y: batched_buffers['grad_y'],
+            self.var_color: batched_buffers['var_color'],
+            self.var_features: batched_buffers['var_features'],
+        }
+        if tensor is None:
+            tensor = self.out  # tensor to evaluate
+        return sess.run(tensor, feed_dict)
+
+    def run_train_step(self, sess, iteration):
+        # TODO
+        _, loss, loss_summary, gnorm = sess.run(
+            [self.opt_op, self.loss, self.loss_summary, self.gnorm])
+        self.train_writer.add_summary(loss_summary, iteration)
+        return loss, gnorm
+
+    def run_validation(self, sess):
+        # TODO
+        return sess.run([self.loss, self.color, self.out, self.gt_out])
+
+    def restore(self, sess, restore_path, optimistic=False):
+        self.kpcn1.restore(sess, restore_path, optimistic)  # reuse vars, so should restore all
+
+    def _scale_compositor(self, denoised_fine, denoised_coarse):
+        h, w = MultiscaleModel._get_spatial_dims(im)
+        add_one = h % 2 == 1
+        with tf.variable_scope('scale_compositor', reuse=True):
+            alpha = tf.concat((denoised_fine, upsample2(denoised_coarse, add_one)), axis=-1)
+            alpha = tf.layers.conv2d(
+                alpha, filters=100, kernel_size=1, strides=1, padding='same', activation=None)
+            alpha = self._residual_block(alpha, 0.9, self.is_training)
+            alpha = self._residual_block(alpha, 0.9, self.is_training)
+            alpha = tf.layers.conv2d(
+                alpha, filters=1, kernel_size=1, strides=1, padding='same', activation=None)
+            alpha = tf.nn.sigmoid(alpha)
+            # blend fine and coarse images
+            return denoised_fine \
+                - alpha * upsample2(downsample2(denoised_fine), add_one) \
+                + alpha * upsample2(denoised_coarse, add_one)
+
+    @staticmethod
+    def _resize_all(buffers, new_height, new_width):
+        """Resize image tensors in the BUFFERS dictionary to (new_height, new_width)."""
+        return {k: tf.image.resize_images(v,
+            [new_height, new_width], method=ResizeMethod.BILINEAR) for k, v in buffers}
+
+    @staticmethod
+    def _downsample2(im):
+        h, w = MultiscaleModel._get_spatial_dims(im)
+        return tf.image.resize_images(im, [h // 2, w // 2], method=ResizeMethod.BILINEAR)
+
+    @staticmethod
+    def _upsample2(im, add_one=False):
+        h, w = MultiscaleModel._get_spatial_dims(im)
+        new_height, new_width = h * 2, w * 2
+        if add_one:
+            new_height += 1
+            new_width  += 1
+        return tf.image.resize_images(
+            im, [new_height, new_width], method=ResizeMethod.NEAREST_NEIGHBOR)
+
+    @staticmethod
+    def _get_spatial_dims(im):
+        im_shape = im.get_shape().as_list()
+        if len(im_shape) == 4:
+            h, w = im_shape[1], im_shape[2]
+        else:
+            h, w = im_shape[0], im_shape[1]
+        return h, w
 
 class CombinedModel(object):
     """Diffuse + specular KPCNs."""
