@@ -19,7 +19,8 @@ class DKPCN(object):
 
     def __init__(self, tf_buffers, buffer_h, buffer_w, layers_config,
                  is_training, learning_rate, summary_dir, scope=None,
-                 save_best=False, fp16=False, clip_by_global_norm=False, valid_padding=False):
+                 save_best=False, fp16=False, clip_by_global_norm=False,
+                 valid_padding=False, asymmetric_loss=True):
 
         self.buffer_h = buffer_h
         self.buffer_w = buffer_w
@@ -86,8 +87,10 @@ class DKPCN(object):
             if self.valid_padding:
                 gt_out = tf_center_crop(gt_out, self.valid_h, self.valid_w)
             self.gt_out = tf.identity(gt_out, name='gt_out')  # (?, h, w, 3)
-            self.loss = self._asymmetric_smape(self.color, self.out, self.gt_out, slope=2.0)
-            # self.loss = tf.identity(self._smape(self.out, self.gt_out), name='smape')
+            if asymmetric_loss:
+                self.loss = self._asymmetric_smape(self.color, self.out, self.gt_out, slope=2.0)
+            else:
+                self.loss = tf.identity(self._smape(self.out, self.gt_out), name='smape')
             self.loss_summary = tf.summary.scalar('loss', self.loss)
 
             # optimization
