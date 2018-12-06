@@ -46,27 +46,32 @@ class DKPCN(object):
 
             i = 0
             for layer in layers_config:
-                with tf.variable_scope('layer%d' % i):
-                    try:
-                        activation = getattr(tf.nn, layer.get('activation', ''))
-                    except AttributeError:
-                        activation = None
-                    if layer['type'] == 'conv2d':
-                        padding = 'valid' if self.valid_padding else 'same'
-                        out = tf.layers.conv2d(
-                            out, layer['num_outputs'], layer['kernel_size'],
-                            strides=layer['stride'], padding=padding, activation=activation, name='conv2d')
-                    elif layer['type'] == 'residual_block':
-                        dropout_keep_prob = layer.get('dropout_keep_prob', None)
-                        chain = layer.get('chain', 1)
-                        for j in range(chain):
-                            out = self._residual_block(out, i + j, dropout_keep_prob, self.is_training)
-                        i += chain - 1
-                    elif layer['type'] == 'batch_normalization':
-                        out = tf.layers.batch_normalization(out, training=self.is_training, name='batch_normalization')
-                    else:
-                        raise ValueError('unsupported DKPCN layer type')
-                i += 1
+                kernel_init = None
+                if layer.get('kernel_init', None) == 'xavier':
+                    kernel_init = tf.contrib.layers.xavier_initializer(seed=23)
+                try:
+                    activation = getattr(tf.nn, layer.get('activation', ''))
+                except AttributeError:
+                    activation = None
+                chain = layer.get('chain', 1)
+                for j in range(chain):
+                    with tf.variable_scope('layer%d' % (i + j)):
+                        if layer['type'] == 'conv2d':
+                            padding = 'valid' if self.valid_padding else 'same'
+                            out = tf.layers.conv2d(
+                                out, layer['num_outputs'], layer['kernel_size'],
+                                strides=layer['stride'], padding=padding, activation=activation,
+                                kernel_initializer=kernel_init, name='conv2d')
+                        elif layer['type'] == 'residual_block':
+                            dropout_keep_prob = layer.get('dropout_keep_prob', None)
+                            out = self._residual_block(
+                                out, dropout_keep_prob, self.is_training, kernel_init)
+                        elif layer['type'] == 'batch_normalization':
+                            out = tf.layers.batch_normalization(
+                                out, training=self.is_training, name='batch_normalization')
+                        else:
+                            raise ValueError('unsupported DKPCN layer type')
+                i += chain
 
             if layer['num_outputs'] == 3:
                 # DPCN
@@ -170,16 +175,18 @@ class DKPCN(object):
         return tf.maximum(tf.sign(x), 0.0)
 
     @staticmethod
-    def _residual_block(_in, i, dropout_keep_prob, is_training):
-        with tf.variable_scope('residual_block_%s' % str(i)):
+    def _residual_block(_in, dropout_keep_prob, is_training, kernel_init=None):
+        with tf.variable_scope('residual_block'):
             out = tf.nn.relu(_in)
             out = tf.layers.conv2d(
-                out, filters=100, kernel_size=3, strides=1, padding='same', activation=None)
+                out, filters=100, kernel_size=3, strides=1, padding='same',
+                activation=None, kernel_initializer=kernel_init)
             out = tf.nn.relu(out)
             if isinstance(dropout_keep_prob, Number):
                 out = tf.layers.dropout(out, dropout_keep_prob, training=is_training)
             out = tf.layers.conv2d(
-                out, filters=100, kernel_size=3, strides=1, padding='same', activation=None)
+                out, filters=100, kernel_size=3, strides=1, padding='same',
+                activation=None, kernel_initializer=kernel_init)
         return _in + out
 
     def _scale_compositor(self, denoised_fine, denoised_coarse):
