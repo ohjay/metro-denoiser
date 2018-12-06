@@ -14,7 +14,7 @@ from tqdm import tqdm
 import tensorflow as tf
 from scipy.misc import imsave
 
-from kpcn import DKPCN, CombinedModel
+from models import DKPCN, CombinedModel
 import data_utils as du
 
 class Denoiser(object):
