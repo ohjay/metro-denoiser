@@ -717,6 +717,9 @@ def tf_center_crop(im, y_extent, x_extent):
 def tf_nan_to_num(x):
     return tf.where(tf.is_nan(x), tf.zeros_like(x), x)
 
+def tf_inf_to_num(x):
+    return tf.where(tf.is_inf(x), tf.zeros_like(x), x)
+
 # ===============================================
 # VISUALIZATION
 # ===============================================

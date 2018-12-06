@@ -20,7 +20,7 @@ class DKPCN(object):
     def __init__(self, tf_buffers, buffer_h, buffer_w, layers_config,
                  is_training, learning_rate, summary_dir, scope=None,
                  save_best=False, fp16=False, clip_by_global_norm=False,
-                 valid_padding=False, asymmetric_loss=True):
+                 valid_padding=False, asymmetric_loss=True, sess=None):
 
         self.buffer_h = buffer_h
         self.buffer_w = buffer_w
@@ -124,8 +124,9 @@ class DKPCN(object):
             self.opt_op = opt.apply_gradients(grads_and_vars, global_step=self.global_step)
 
             # logging
+            graph = sess.graph if sess is not None else None
             self.train_writer = tf.summary.FileWriter(
-                get_run_dir(os.path.join(summary_dir, 'train')))
+                get_run_dir(os.path.join(summary_dir, 'train')), graph)
             self.validation_writer = tf.summary.FileWriter(
                 get_run_dir(os.path.join(summary_dir, 'validation')))
             mtk = 1 if save_best else 5
@@ -190,16 +191,17 @@ class DKPCN(object):
     def _residual_block(_in, dropout_keep_prob, is_training,
                         kernel_init=None, num_outputs=100, kernel_size=3):
         with tf.variable_scope('residual_block'):
-            out = tf.nn.relu(_in)
-            out = tf.layers.conv2d(
-                out, filters=num_outputs, kernel_size=kernel_size, strides=1,
-                padding='same', activation=None, kernel_initializer=kernel_init)
-            out = tf.nn.relu(out)
-            if isinstance(dropout_keep_prob, Number):
-                out = tf.layers.dropout(out, dropout_keep_prob, training=is_training)
-            out = tf.layers.conv2d(
-                out, filters=num_outputs, kernel_size=kernel_size, strides=1,
-                padding='same', activation=None, kernel_initializer=kernel_init)
+            out = _in
+            for k in range(2):
+                out = tf.layers.conv2d(
+                    out, filters=num_outputs, kernel_size=kernel_size, strides=1,
+                    padding='same', activation=None, kernel_initializer=kernel_init)
+                with tf.variable_scope("batchnorm%d" % k):
+                    out = tf.layers.batch_normalization(
+                        out, training=is_training, name='batch_normalization')
+                out = tf.nn.relu(out)
+                if isinstance(dropout_keep_prob, Number):
+                    out = tf.layers.dropout(out, 1.0 - dropout_keep_prob, training=is_training)
         return _in + out
 
     def _scale_compositor(self, denoised_fine, denoised_coarse):
