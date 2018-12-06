@@ -699,11 +699,22 @@ def tf_postprocess_specular(out_specular):
 
 def tf_center_crop(im, y_extent, x_extent):
     _, im_h, im_w, _ = im.get_shape().as_list()
-    y0 = im_h // 2 - y_extent // 2      # [
-    y1 = im_h // 2 + y_extent // 2 + 1  # )
-    x0 = im_w // 2 - x_extent // 2      # [
-    x1 = im_w // 2 + x_extent // 2 + 1  # )
+    if y_extent <= im_h:
+        y0 = im_h // 2 - y_extent // 2      # [
+        y1 = im_h // 2 + y_extent // 2 + 1  # )
+    else:
+        print('[-] warning: y_extent > im_h')
+        y0, y1 = 0, im_h
+    if x_extent <= im_w:
+        x0 = im_w // 2 - x_extent // 2      # [
+        x1 = im_w // 2 + x_extent // 2 + 1  # )
+    else:
+        print('[-] warning: x_extent > im_w')
+        x0, x1 = 0, im_w
     return im[:, y0:y1, x0:x1, :]
+
+def tf_nan_to_num(x):
+    return tf.where(tf.is_nan(x), tf.zeros_like(x), x)
 
 # ===============================================
 # VISUALIZATION

@@ -52,12 +52,13 @@ train_params:
   checkpoint_dir: checkpoints
   fp16: False
   clip_by_global_norm: False  # empirically not helpful
+  asymmetric_loss: True
 
 kpcn:
   diff:
     train_include: True
     # restore_path: /home/owen/workspace/metro/scripts/checkpoints/diff_saved/var-169999
-    # restore_path: /home/owen/workspace/metro/scripts/checkpoints/diff/var-15999
+    # restore_path: /home/owen/workspace/metro/scripts/checkpoints/diff/var-23999
   spec:
     train_include: False
     # restore_path: /home/owen/workspace/metro/scripts/checkpoints/spec_saved/var-409999
@@ -72,33 +73,34 @@ evaluate:
 
 layers:
   - type: conv2d
+    kernel_init: xavier
     num_outputs: 100
     kernel_size: 3
     stride: 1
-    padding: same
     activation: relu
 
   - type: conv2d
+    kernel_init: xavier
     num_outputs: 100
     kernel_size: 3
     stride: 1
-    padding: same
     activation: x
 
   - type: residual_block
+    kernel_init: xavier
     dropout_keep_prob: 0.9  # to omit, use "x"
-    chain: 24
+    chain: 12
 
   - type: conv2d
+    kernel_init: xavier
     num_outputs: 100
     kernel_size: 1
     stride: 1
-    padding: same
     activation: relu
 
   # output
   - type: conv2d
+    kernel_init: xavier
     num_outputs: 441  # 21 * 21
     kernel_size: 1
     stride: 1
-    padding: same

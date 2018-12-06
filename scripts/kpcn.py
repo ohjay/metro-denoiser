@@ -4,7 +4,7 @@ import tensorflow as tf
 from numbers import Number
 
 from data_utils import get_run_dir, tf_center_crop
-from data_utils import tf_postprocess_diffuse, tf_postprocess_specular
+from data_utils import tf_postprocess_diffuse, tf_postprocess_specular, tf_nan_to_num
 
 class DKPCN(object):
     """
@@ -43,6 +43,7 @@ class DKPCN(object):
 
             out = tf.concat((
                 self.color, self.grad_x, self.grad_y, self.var_color, self.var_features), axis=3)
+            out = tf_nan_to_num(out)
 
             i = 0
             for layer in layers_config:
@@ -93,9 +94,11 @@ class DKPCN(object):
                 gt_out = tf_center_crop(gt_out, self.valid_h, self.valid_w)
             self.gt_out = tf.identity(gt_out, name='gt_out')  # (?, h, w, 3)
             if asymmetric_loss:
-                self.loss = self._asymmetric_smape(self.color, self.out, self.gt_out, slope=2.0)
+                loss = self._asymmetric_smape(self.color, self.out, self.gt_out, slope=2.0)
             else:
-                self.loss = tf.identity(self._smape(self.out, self.gt_out), name='smape')
+                loss = self._smape(self.out, self.gt_out)
+            loss = tf.verify_tensor_all_finite(loss, 'NaN or Inf in loss')
+            self.loss = tf.identity(loss, name='loss')
             self.loss_summary = tf.summary.scalar('loss', self.loss)
 
             # optimization
@@ -133,15 +136,19 @@ class DKPCN(object):
         # `color`   : (?, h, w, 3)
         # `kernels` : (?, h, w, kernel_size * kernel_size)
 
-        if self.valid_padding:
-            y_extent = self.valid_h + self.kernel_size - 1
-            x_extent = self.valid_w + self.kernel_size - 1
-            color = tf_center_crop(color, y_extent, x_extent)
-        else:
+        _, im_h, im_w, _ = color.get_shape().as_list()    # all locns
+        # (self.valid_h, self.valid_w): locations we have kernels for
+
+        kernel_radius = self.kernel_size // 2
+        y_extent = self.valid_h + kernel_radius * 2
+        x_extent = self.valid_w + kernel_radius * 2  # add an extra kernel_radius on each side
+        if y_extent > im_h:
             # zero-pad color buffer
-            kernel_radius = self.kernel_size // 2
-            color = tf.pad(color, [
-                [0, 0], [kernel_radius, kernel_radius], [kernel_radius, kernel_radius], [0, 0]])
+            pad_y = int((y_extent - im_h) / 2)
+            pad_x = int((x_extent - im_w) / 2)
+            color = tf.pad(color, [[0, 0], [pad_y, pad_y], [pad_x, pad_x], [0, 0]])
+        else:
+            color = tf_center_crop(color, y_extent, x_extent)
 
         # filter channels separately
         filtered_channels = []
@@ -157,6 +164,10 @@ class DKPCN(object):
                 tf.reduce_sum(color_channel * kernels, axis=-1))
 
         return tf.stack(filtered_channels, axis=3)  # (?, h, w, 3)
+
+    @staticmethod
+    def _l1_loss(out, gt_out):
+        return tf.reduce_mean(tf.abs(out - gt_out))
 
     @staticmethod
     def _smape(out, gt_out):
