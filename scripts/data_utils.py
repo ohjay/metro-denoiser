@@ -120,6 +120,7 @@ def stack_channels(buffers):
             buffers_out[c] = np.stack(data_channels, axis=-1)
         else:
             buffers_out[c] = np.expand_dims(data, -1)
+        buffers_out[c] = np.nan_to_num(buffers_out[c])
     return buffers_out
 
 def split_channels(buffers):
