@@ -98,9 +98,11 @@ class DKPCN(object):
                 opt = tf.train.AdamOptimizer(self.learning_rate, epsilon=1e-4)
             else:
                 opt = tf.train.AdamOptimizer(self.learning_rate)
-            grads_and_vars = opt.compute_gradients(self.loss)
+            grads_and_vars = opt.compute_gradients(self.loss)  # [(grad, var) tuples]
             grads_and_vars = filter(lambda gv: None not in gv, grads_and_vars)
             grads, _vars = zip(*grads_and_vars)
+            self.grads = grads  # list of gradients
+            self.tvars = _vars  # list of trainable variables
             self.gnorm = tf.global_norm(grads, name='grad_norm')
             if clip_by_global_norm:  # empirically not helpful
                 grads, _ = tf.clip_by_global_norm(grads, 0.5, use_norm=self.gnorm)

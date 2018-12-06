@@ -59,7 +59,7 @@ class Denoiser(object):
                             avg_loss = total_loss / count
                             if avg_loss < min_avg_train_loss:
                                 min_avg_train_loss = avg_loss
-                            print('[step %07d] %s loss: %.5f | gnorm: %.5f' \
+                            print('[step %07d] %s loss: %.5f | gnorm: %.7f' \
                                 % (i, identifier, avg_loss, gnorm))
                             total_loss, count = 0.0, 0
                         if (i + 1) % save_freq == 0 and not save_best:
