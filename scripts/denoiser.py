@@ -399,7 +399,7 @@ class Denoiser(object):
                     normal_var_weight=normal_var_weight, file_example_limit=file_example_limit,
                     error_maps=error_maps)
 
-    def visualize_data(self, config):
+    def visualize_data(self, config, all_features=False):
         """Visualize sampled data stored in the TFRecord files."""
         tf_buffers, init_ops = self.load_data(config, shuffle=False)
         tf_config = tf.ConfigProto(device_count={'GPU': 1}, allow_soft_placement=True)
@@ -411,8 +411,36 @@ class Denoiser(object):
 
             itr_remaining = 1
             while itr_remaining > 0:
-                _in, _gt = sess.run([tf_buffers['color'], tf_buffers['gt_out']])
-                du.show_multiple(_in, _gt, block_on_viz=True)
+                if all_features:
+                    _in, grad_x, grad_y, var_color, var_features, _gt = sess.run([
+                        tf_buffers['color'], tf_buffers['grad_x'], tf_buffers['grad_y'],
+                        tf_buffers['var_color'], tf_buffers['var_features'], tf_buffers['gt_out']])
+
+                    grad_x_color  = grad_x[0, :, :, :3]
+                    grad_x_normal = grad_x[0, :, :, 3:6]
+                    grad_x_albedo = grad_x[0, :, :, 6:9]
+                    grad_x_depth  = grad_x[0, :, :, 9]
+
+                    grad_y_color  = grad_y[0, :, :, :3]
+                    grad_y_normal = grad_y[0, :, :, 3:6]
+                    grad_y_albedo = grad_y[0, :, :, 6:9]
+                    grad_y_depth  = grad_y[0, :, :, 9]
+
+                    var_color  = var_color[0, :, :, 0]
+                    var_normal = var_features[0, :, :, 0]
+                    var_albedo = var_features[0, :, :, 1]
+                    var_depth  = var_features[0, :, :, 2]
+
+                    _in = _in[0, :, :, :]
+                    _gt = _gt[0, :, :, :]
+
+                    du.show_multiple(
+                        _in, grad_x_color, grad_x_normal, grad_x_albedo, grad_x_depth,
+                        grad_y_color, grad_y_normal, grad_y_albedo, grad_y_depth,
+                        var_color, var_normal, var_albedo, var_depth, _gt, row_max=14, block_on_viz=True)
+                else:
+                    _in, _gt = sess.run([tf_buffers['color'], tf_buffers['gt_out']])
+                    du.show_multiple(_in, _gt, block_on_viz=True)
                 itr_remaining -= 1
                 if itr_remaining == 0:
                     try:
