@@ -4,10 +4,10 @@ op: train
 data:
   data_dir: /media/owen/302371f7-852e-4f78-94e6-4d3ffebda36e/deep_learning_denoising/renderings
   tfrecord_dir:
-    - /media/owen/302371f7-852e-4f78-94e6-4d3ffebda36e/renderings_tfrecords
+    # - /media/owen/302371f7-852e-4f78-94e6-4d3ffebda36e/renderings_tfrecords
     - /media/owen/302371f7-852e-4f78-94e6-4d3ffebda36e/renderings_tfrecords_partition
-    - /media/owen/302371f7-852e-4f78-94e6-4d3ffebda36e/renderings_tfrecords_partition_128
-    - /media/owen/302371f7-852e-4f78-94e6-4d3ffebda36e/renderings_tfrecords_partition_spec
+    # - /media/owen/302371f7-852e-4f78-94e6-4d3ffebda36e/renderings_tfrecords_partition_128
+    # - /media/owen/302371f7-852e-4f78-94e6-4d3ffebda36e/renderings_tfrecords_partition_spec
   scenes:
     - bathroom2
     - car2
@@ -58,11 +58,11 @@ kpcn:
   diff:
     train_include: True
     # restore_path: /home/owen/workspace/metro/scripts/checkpoints/diff_saved/var-169999
-    # restore_path: /home/owen/workspace/metro/scripts/checkpoints/diff/var-23999
+    restore_path: /home/owen/workspace/metro/scripts/checkpoints/diff_saved/var-55999
   spec:
     train_include: False
     # restore_path: /home/owen/workspace/metro/scripts/checkpoints/spec_saved/var-409999
-    restore_path: /home/owen/workspace/metro/scripts/checkpoints/spec/var-3999
+    restore_path: /home/owen/workspace/metro/scripts/checkpoints/spec_saved/var-29999
   valid_padding: False  # during training only
 
 evaluate:
@@ -71,6 +71,29 @@ evaluate:
   write_error_ims: False
   viz_kernels: True
 
+# -----------------
+# KPCN architecture
+# -----------------
+# layers:
+#   - type: conv2d
+#     kernel_init: xavier
+#     num_outputs: 100
+#     kernel_size: 5
+#     stride: 1
+#     activation: relu
+#     chain: 8
+
+#   # output
+#   - type: conv2d
+#     kernel_init: xavier
+#     num_outputs: 441  # 21 * 21
+#     kernel_size: 5
+#     stride: 1
+#     activation: x
+
+# -----------------
+# KPAL architecture
+# -----------------
 layers:
   - type: conv2d
     kernel_init: xavier
@@ -84,7 +107,7 @@ layers:
     num_outputs: 100
     kernel_size: 3
     stride: 1
-    activation: x
+    activation: relu
 
   - type: residual_block
     kernel_init: xavier
@@ -106,3 +129,4 @@ layers:
     num_outputs: 441  # 21 * 21
     kernel_size: 1
     stride: 1
+    activation: x
