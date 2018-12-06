@@ -206,7 +206,7 @@ class Denoiser(object):
             return dataset.interleave(tf.data.TFRecordDataset, cycle_length=min(750, len(filenames)))
 
         with tf.device('/cpu:0'):
-            if shuffle_filenames:
+            if shuffle and shuffle_filenames:
                 train_dataset = shuffled_dataset(train_filenames)
                 val_dataset   = shuffled_dataset(val_filenames)
             else:
