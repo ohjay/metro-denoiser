@@ -66,7 +66,8 @@ class DKPCN(object):
                         elif layer['type'] == 'residual_block':
                             dropout_keep_prob = layer.get('dropout_keep_prob', None)
                             out = self._residual_block(
-                                out, dropout_keep_prob, self.is_training, kernel_init)
+                                out, dropout_keep_prob, self.is_training, kernel_init,
+                                layer.get('num_outputs', 100), layer.get('kernel_size', 3))
                         elif layer['type'] == 'batch_normalization':
                             out = tf.layers.batch_normalization(
                                 out, training=self.is_training, name='batch_normalization')
@@ -186,18 +187,19 @@ class DKPCN(object):
         return tf.maximum(tf.sign(x), 0.0)
 
     @staticmethod
-    def _residual_block(_in, dropout_keep_prob, is_training, kernel_init=None):
+    def _residual_block(_in, dropout_keep_prob, is_training,
+                        kernel_init=None, num_outputs=100, kernel_size=3):
         with tf.variable_scope('residual_block'):
             out = tf.nn.relu(_in)
             out = tf.layers.conv2d(
-                out, filters=100, kernel_size=3, strides=1, padding='same',
-                activation=None, kernel_initializer=kernel_init)
+                out, filters=num_outputs, kernel_size=kernel_size, strides=1,
+                padding='same', activation=None, kernel_initializer=kernel_init)
             out = tf.nn.relu(out)
             if isinstance(dropout_keep_prob, Number):
                 out = tf.layers.dropout(out, dropout_keep_prob, training=is_training)
             out = tf.layers.conv2d(
-                out, filters=100, kernel_size=3, strides=1, padding='same',
-                activation=None, kernel_initializer=kernel_init)
+                out, filters=num_outputs, kernel_size=kernel_size, strides=1,
+                padding='same', activation=None, kernel_initializer=kernel_init)
         return _in + out
 
     def _scale_compositor(self, denoised_fine, denoised_coarse):

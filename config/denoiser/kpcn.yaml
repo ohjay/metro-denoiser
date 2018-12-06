@@ -88,6 +88,8 @@ layers:
 
   - type: residual_block
     kernel_init: xavier
+    num_outputs: 100
+    kernel_size: 3
     dropout_keep_prob: 0.9  # to omit, use "x"
     chain: 12
 
