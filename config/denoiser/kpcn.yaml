@@ -59,15 +59,15 @@ kpcn:
   diff:
     train_include: True
     # restore_path: /home/owen/workspace/metro/scripts/checkpoints/diff_saved/var-169999
-    restore_path: /home/owen/workspace/metro/scripts/checkpoints/diff/var-77999  # raw (not bad)
-    multiscale_restore_path: /home/owen/workspace/metro/scripts/checkpoints/diff/ms-var-11999
+    # restore_path: /home/owen/workspace/metro/scripts/checkpoints/diff_saved/var-77999  # raw, chain 12 (not bad)
+    # multiscale_restore_path: /home/owen/workspace/metro/scripts/checkpoints/diff/ms-var-11999
     # restore_path: /home/owen/workspace/metro/scripts/checkpoints/diff_saved/var-3999  # conv9, trained on all
     # restore_path: /home/owen/workspace/metro/scripts/checkpoints/diff/var-67999  # conv9 trained on some
   spec:
     train_include: False
     # restore_path: /home/owen/workspace/metro/scripts/checkpoints/spec_saved/var-409999
-    restore_path: /home/owen/workspace/metro/scripts/checkpoints/spec/var-235999  # raw (not bad)
-    multiscale_restore_path: /home/owen/workspace/metro/scripts/checkpoints/spec/ms-var-3999
+    # restore_path: /home/owen/workspace/metro/scripts/checkpoints/spec_saved/var-235999  # raw, chain 12 (not bad)
+    # multiscale_restore_path: /home/owen/workspace/metro/scripts/checkpoints/spec/ms-var-3999
     # restore_path: /home/owen/workspace/metro/scripts/checkpoints/spec/var-5999  # conv9, trained on all
     # restore_path: /home/owen/workspace/metro/scripts/checkpoints/comb/spec/var-1999  # conv9 trained on some
   valid_padding: False  # during training only
