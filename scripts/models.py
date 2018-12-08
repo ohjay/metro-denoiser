@@ -191,16 +191,17 @@ class DKPCN(object):
 
     @staticmethod
     def _residual_block(_in, dropout_keep_prob, is_training,
-                        kernel_init=None, num_outputs=100, kernel_size=3):
+                        kernel_init=None, num_outputs=100, kernel_size=3, batchnorm=True):
         with tf.variable_scope('residual_block'):
             out = _in
             for k in range(2):
                 out = tf.layers.conv2d(
                     out, filters=num_outputs, kernel_size=kernel_size, strides=1,
                     padding='same', activation=None, kernel_initializer=kernel_init)
-                with tf.variable_scope("batchnorm%d" % k):
-                    out = tf.layers.batch_normalization(
-                        out, training=is_training, name='batch_normalization')
+                if batchnorm:
+                    with tf.variable_scope("batchnorm%d" % k):
+                        out = tf.layers.batch_normalization(
+                            out, training=is_training, name='batch_normalization')
                 out = tf.nn.relu(out)
                 if isinstance(dropout_keep_prob, Number):
                     if not is_training:
@@ -257,11 +258,10 @@ class DKPCN(object):
 
     def restore(self, sess, restore_path, optimistic=False):
         if os.path.isfile(restore_path + '.index'):
-            saver = tf.train.Saver(tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope=self.scope))
             if optimistic:
                 self._optimistic_restore(sess, restore_path)  # ignore vars not in checkpoint
             else:
-                saver.restore(sess, restore_path)
+                self.saver.restore(sess, restore_path)
             print('[+] `%s` network restored from `%s`.' % (self.scope, restore_path))
 
 class MultiscaleModel(DKPCN):
@@ -274,59 +274,68 @@ class MultiscaleModel(DKPCN):
 
         self.tf_buffers = tf_buffers
         self.is_training = is_training
+        h, w = MultiscaleModel._get_spatial_dims(tf_buffers['color'])
 
-        tf_buffers2 = self._resize_all(tf_buffers, buffer_h // 2, buffer_w // 2)
-        tf_buffers4 = self._resize_all(tf_buffers, buffer_h // 4, buffer_w // 4)
+        tf_buffers2 = self._resize_all(tf_buffers, h // 2, w // 2)
+        tf_buffers2['var_color'] = tf_buffers2['var_color'] / 4.0
+        tf_buffers2['var_features'] = tf_buffers2['var_features'] / 4.0
+        tf_buffers4 = self._resize_all(tf_buffers, h // 4, w // 4)
+        tf_buffers4['var_color'] = tf_buffers4['var_color'] / 16.0
+        tf_buffers4['var_features'] = tf_buffers4['var_features'] / 16.0
 
         # fine to coarse
         self.kpcn1 = DKPCN(
-            tf_buffers, buffer_h, buffer_w, layers_config, is_training, learning_rate, summary_dir,
+            tf_buffers, h, w, layers_config, is_training, learning_rate, summary_dir,
             scope, save_best, fp16, clip_by_global_norm, valid_padding, asymmetric_loss, sess, reuse=tf.AUTO_REUSE)
         self.kpcn2 = DKPCN(
-            tf_buffers2, buffer_h // 2, buffer_w // 2, layers_config, is_training, learning_rate, summary_dir,
+            tf_buffers2, h // 2, w // 2, layers_config, is_training, learning_rate, summary_dir,
             scope, save_best, fp16, clip_by_global_norm, valid_padding, asymmetric_loss, sess, reuse=tf.AUTO_REUSE)
         self.kpcn4 = DKPCN(
-            tf_buffers4, buffer_h // 4, buffer_w // 4, layers_config, is_training, learning_rate, summary_dir,
+            tf_buffers4, h // 4, w // 4, layers_config, is_training, learning_rate, summary_dir,
             scope, save_best, fp16, clip_by_global_norm, valid_padding, asymmetric_loss, sess, reuse=tf.AUTO_REUSE)
 
         self.denoised1 = tf.stop_gradient(self.kpcn1.out)
         self.denoised2 = tf.stop_gradient(self.kpcn2.out)
         self.denoised4 = tf.stop_gradient(self.kpcn4.out)
 
+        self.alpha = None  # will be assigned in the following method call
         self.out = self._scale_compositor(self.denoised2, self.denoised4)
         self.out = self._scale_compositor(self.denoised1, self.out)  # reuse vars, so same as first compositor
+        self.alpha_mean = tf.reduce_mean(self.alpha)
 
         self.color = self.kpcn1.color
         self.tvars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope='scale_compositor')
         self.saver = tf.train.Saver(self.tvars, max_to_keep=5)
 
-        # optimization
-        self.gt_out = tf.identity(tf_buffers['gt_out'], name='gt_out')  # (?, h, w, 3)
-        if asymmetric_loss:
-            loss = self._asymmetric_smape(self.color, self.out, self.gt_out, slope=2.0)
-        else:
-            loss = self._smape(self.out, self.gt_out)
-        loss = tf.verify_tensor_all_finite(loss, 'NaN or Inf in loss')
-        self.loss = tf.identity(loss, name='loss')
-        self.loss_summary = tf.summary.scalar('loss', self.loss)
+        with tf.variable_scope('scale_compositor', reuse=tf.AUTO_REUSE):
+            # loss
+            self.gt_out = tf.identity(tf_buffers['gt_out'], name='gt_out')  # (?, h, w, 3)
+            if asymmetric_loss:
+                loss = self._asymmetric_smape(self.color, self.out, self.gt_out, slope=2.0)
+            else:
+                loss = self._smape(self.out, self.gt_out)
+            loss = tf.verify_tensor_all_finite(loss, 'NaN or Inf in loss')
+            self.loss = tf.identity(loss, name='loss')
+            self.loss_summary = tf.summary.scalar('%s/multiscale_loss' % scope, self.loss)
+            self.loss += 0.1 * tf.maximum(0.5 - self.alpha_mean, 0.0)  # utilize alpha (don't let it go to 0)
 
-        # optimization
-        self.global_step = tf.Variable(0, trainable=False, name='global_step')
-        self.learning_rate = tf.train.exponential_decay(learning_rate, self.global_step, 100000, 0.96)
-        if fp16:
-            opt = tf.train.AdamOptimizer(self.learning_rate, epsilon=1e-4)
-        else:
-            opt = tf.train.AdamOptimizer(self.learning_rate)
-        grads_and_vars = opt.compute_gradients(self.loss, self.tvars)  # [(grad, var) tuples]
-        grads_and_vars = filter(lambda gv: None not in gv, grads_and_vars)
-        grads, _vars = zip(*grads_and_vars)
-        self.gnorm = tf.global_norm(grads, name='grad_norm')
-        if clip_by_global_norm:  # empirically not helpful
-            grads, _ = tf.clip_by_global_norm(grads, 0.5, use_norm=self.gnorm)
-            grads_and_vars = zip(grads, _vars)
-        # clip by value
-        grads_and_vars = [(tf.clip_by_value(grad, -1.0, 1.0), var) for grad, var in grads_and_vars]
-        self.opt_op = opt.apply_gradients(grads_and_vars, global_step=self.global_step)
+            # optimization
+            self.global_step = tf.Variable(0, trainable=False, name='global_step')
+            self.learning_rate = tf.train.exponential_decay(learning_rate, self.global_step, 100000, 0.96)
+            if fp16:
+                opt = tf.train.AdamOptimizer(self.learning_rate, epsilon=1e-4)
+            else:
+                opt = tf.train.AdamOptimizer(self.learning_rate)
+            grads_and_vars = opt.compute_gradients(self.loss, self.tvars)  # [(grad, var) tuples]
+            grads_and_vars = filter(lambda gv: None not in gv, grads_and_vars)
+            grads, _vars = zip(*grads_and_vars)
+            self.gnorm = tf.global_norm(grads, name='grad_norm')
+            if clip_by_global_norm:  # empirically not helpful
+                grads, _ = tf.clip_by_global_norm(grads, 0.5, use_norm=self.gnorm)
+                grads_and_vars = zip(grads, _vars)
+            # clip by value
+            grads_and_vars = [(tf.clip_by_value(grad, -1.0, 1.0), var) for grad, var in grads_and_vars]
+            self.opt_op = opt.apply_gradients(grads_and_vars, global_step=self.global_step)
 
         # logging
         graph = sess.graph if sess is not None else None
@@ -347,21 +356,37 @@ class MultiscaleModel(DKPCN):
             tensor = self.out  # tensor to evaluate
         return sess.run(tensor, feed_dict)
 
+    def save(self, sess, iteration, checkpoint_dir='checkpoints', write_meta_graph=True):
+        if not os.path.exists(checkpoint_dir):
+            os.makedirs(checkpoint_dir)
+        base_filepath = os.path.join(checkpoint_dir, 'ms-var')
+        self.saver.save(sess, base_filepath, global_step=iteration, write_meta_graph=write_meta_graph)
+        print('[+] Saved current parameters to %s-%d.' % (base_filepath, iteration))
+
     def restore(self, sess, restore_path, optimistic=False):
-        self.kpcn1.restore(sess, restore_path, optimistic=True)  # reuse vars, so should restore all
+        kpcn_rpath, ms_rpath = restore_path
+        # restore single-frame KPCN
+        self.kpcn1.restore(sess, kpcn_rpath, optimistic=True)  # reuse vars, so should restore all
+        # restore multiscale module
+        if os.path.isfile(ms_rpath + '.index'):
+            if optimistic:
+                self._optimistic_restore(sess, ms_rpath)  # ignore vars not in checkpoint
+            else:
+                self.saver.restore(sess, ms_rpath)
+            print('[+] multiscale `%s` network restored from `%s`.' % (self.kpcn1.scope, ms_rpath))
 
     def _scale_compositor(self, denoised_fine, denoised_coarse):
         h, w = MultiscaleModel._get_spatial_dims(denoised_fine)
-        add_one = h % 2 == 1
+        add_one = (h % 2 == 1, w % 2 == 1)
         with tf.variable_scope('scale_compositor', reuse=tf.AUTO_REUSE):
             alpha = tf.concat((denoised_fine, self._upsample2(denoised_coarse, add_one)), axis=-1)
             alpha = tf.layers.conv2d(
-                alpha, filters=100, kernel_size=1, strides=1, padding='same', activation=None)
-            alpha = self._residual_block(alpha, 0.9, self.is_training)
-            alpha = self._residual_block(alpha, 0.9, self.is_training)
+                alpha, filters=100, kernel_size=1, strides=1, padding='same', activation=tf.nn.relu)
+            alpha = self._residual_block(alpha, None, self.is_training, batchnorm=False)
+            alpha = self._residual_block(alpha, None, self.is_training, batchnorm=False)
             alpha = tf.layers.conv2d(
                 alpha, filters=1, kernel_size=1, strides=1, padding='same', activation=None)
-            alpha = tf.nn.sigmoid(alpha)
+            self.alpha = alpha = tf.nn.sigmoid(alpha)
             # blend fine and coarse images
             return denoised_fine \
                 - alpha * self._upsample2(self._downsample2(denoised_fine), add_one) \
@@ -382,8 +407,9 @@ class MultiscaleModel(DKPCN):
     def _upsample2(im, add_one=False):
         h, w = MultiscaleModel._get_spatial_dims(im)
         new_height, new_width = h * 2, w * 2
-        if add_one:
+        if add_one[0]:
             new_height += 1
+        if add_one[1]:
             new_width  += 1
         return tf.image.resize_images(
             im, [new_height, new_width], method=tf.image.ResizeMethod.NEAREST_NEIGHBOR)
