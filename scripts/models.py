@@ -110,18 +110,20 @@ class DKPCN(object):
                 opt = tf.train.AdamOptimizer(self.learning_rate, epsilon=1e-4)
             else:
                 opt = tf.train.AdamOptimizer(self.learning_rate)
-            grads_and_vars = opt.compute_gradients(self.loss)  # [(grad, var) tuples]
-            grads_and_vars = filter(lambda gv: None not in gv, grads_and_vars)
-            grads, _vars = zip(*grads_and_vars)
-            self.grads = grads  # list of gradients
-            self.tvars = _vars  # list of trainable variables
-            self.gnorm = tf.global_norm(grads, name='grad_norm')
-            if clip_by_global_norm:  # empirically not helpful
-                grads, _ = tf.clip_by_global_norm(grads, 0.5, use_norm=self.gnorm)
-                grads_and_vars = zip(grads, _vars)
-            # clip by value
-            grads_and_vars = [(tf.clip_by_value(grad, -1.0, 1.0), var) for grad, var in grads_and_vars]
-            self.opt_op = opt.apply_gradients(grads_and_vars, global_step=self.global_step)
+            update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
+            with tf.control_dependencies(update_ops):  # for batch norm
+                grads_and_vars = opt.compute_gradients(self.loss)  # [(grad, var) tuples]
+                grads_and_vars = filter(lambda gv: None not in gv, grads_and_vars)
+                grads, _vars = zip(*grads_and_vars)
+                self.grads = grads  # list of gradients
+                self.tvars = _vars  # list of trainable variables
+                self.gnorm = tf.global_norm(grads, name='grad_norm')
+                if clip_by_global_norm:  # empirically not helpful
+                    grads, _ = tf.clip_by_global_norm(grads, 0.5, use_norm=self.gnorm)
+                    grads_and_vars = zip(grads, _vars)
+                # clip by value
+                grads_and_vars = [(tf.clip_by_value(grad, -1.0, 1.0), var) for grad, var in grads_and_vars]
+                self.opt_op = opt.apply_gradients(grads_and_vars, global_step=self.global_step)
 
             # logging
             graph = sess.graph if sess is not None else None
@@ -201,7 +203,9 @@ class DKPCN(object):
                         out, training=is_training, name='batch_normalization')
                 out = tf.nn.relu(out)
                 if isinstance(dropout_keep_prob, Number):
-                    out = tf.layers.dropout(out, 1.0 - dropout_keep_prob, training=is_training)
+                    if not is_training:
+                        dropout_keep_prob = 1.0
+                    out = tf.nn.dropout(out, dropout_keep_prob)
         return _in + out
 
     def run(self, sess, batched_buffers, tensor=None):
@@ -260,19 +264,30 @@ class DKPCN(object):
                 saver.restore(sess, restore_path)
             print('[+] `%s` network restored from `%s`.' % (self.scope, restore_path))
 
-class MultiscaleModel(object):
+class MultiscaleModel(DKPCN):
     """Wrapper around a standard KPCN which combines results from three different scales."""
 
-    def __init__(self, tf_buffers, buffer_h, buffer_w, *args, **kwargs):
+    def __init__(self, tf_buffers, buffer_h, buffer_w, layers_config,
+                 is_training, learning_rate, summary_dir, scope=None,
+                 save_best=False, fp16=False, clip_by_global_norm=False,
+                 valid_padding=False, asymmetric_loss=True, sess=None, reuse=False):
+
+        self.tf_buffers = tf_buffers
+        self.is_training = is_training
 
         tf_buffers2 = self._resize_all(tf_buffers, buffer_h // 2, buffer_w // 2)
         tf_buffers4 = self._resize_all(tf_buffers, buffer_h // 4, buffer_w // 4)
 
         # fine to coarse
-        kwargs['reuse'] = True
-        self.kpcn1 = DKPCN(tf_buffers, buffer_h, buffer_w, *args, **kwargs)
-        self.kpcn2 = DKPCN(tf_buffers2, buffer_h // 2, buffer_w // 2, *args, **kwargs)
-        self.kpcn4 = DKPCN(tf_buffers4, buffer_h // 4, buffer_w // 4, *args, **kwargs)
+        self.kpcn1 = DKPCN(
+            tf_buffers, buffer_h, buffer_w, layers_config, is_training, learning_rate, summary_dir,
+            scope, save_best, fp16, clip_by_global_norm, valid_padding, asymmetric_loss, sess, reuse=tf.AUTO_REUSE)
+        self.kpcn2 = DKPCN(
+            tf_buffers2, buffer_h // 2, buffer_w // 2, layers_config, is_training, learning_rate, summary_dir,
+            scope, save_best, fp16, clip_by_global_norm, valid_padding, asymmetric_loss, sess, reuse=tf.AUTO_REUSE)
+        self.kpcn4 = DKPCN(
+            tf_buffers4, buffer_h // 4, buffer_w // 4, layers_config, is_training, learning_rate, summary_dir,
+            scope, save_best, fp16, clip_by_global_norm, valid_padding, asymmetric_loss, sess, reuse=tf.AUTO_REUSE)
 
         self.denoised1 = tf.stop_gradient(self.kpcn1.out)
         self.denoised2 = tf.stop_gradient(self.kpcn2.out)
@@ -286,40 +301,60 @@ class MultiscaleModel(object):
         self.saver = tf.train.Saver(self.tvars, max_to_keep=5)
 
         # optimization
-        # TODO
+        self.gt_out = tf.identity(tf_buffers['gt_out'], name='gt_out')  # (?, h, w, 3)
+        if asymmetric_loss:
+            loss = self._asymmetric_smape(self.color, self.out, self.gt_out, slope=2.0)
+        else:
+            loss = self._smape(self.out, self.gt_out)
+        loss = tf.verify_tensor_all_finite(loss, 'NaN or Inf in loss')
+        self.loss = tf.identity(loss, name='loss')
+        self.loss_summary = tf.summary.scalar('loss', self.loss)
+
+        # optimization
+        self.global_step = tf.Variable(0, trainable=False, name='global_step')
+        self.learning_rate = tf.train.exponential_decay(learning_rate, self.global_step, 100000, 0.96)
+        if fp16:
+            opt = tf.train.AdamOptimizer(self.learning_rate, epsilon=1e-4)
+        else:
+            opt = tf.train.AdamOptimizer(self.learning_rate)
+        grads_and_vars = opt.compute_gradients(self.loss, self.tvars)  # [(grad, var) tuples]
+        grads_and_vars = filter(lambda gv: None not in gv, grads_and_vars)
+        grads, _vars = zip(*grads_and_vars)
+        self.gnorm = tf.global_norm(grads, name='grad_norm')
+        if clip_by_global_norm:  # empirically not helpful
+            grads, _ = tf.clip_by_global_norm(grads, 0.5, use_norm=self.gnorm)
+            grads_and_vars = zip(grads, _vars)
+        # clip by value
+        grads_and_vars = [(tf.clip_by_value(grad, -1.0, 1.0), var) for grad, var in grads_and_vars]
+        self.opt_op = opt.apply_gradients(grads_and_vars, global_step=self.global_step)
+
+        # logging
+        graph = sess.graph if sess is not None else None
+        self.train_writer = tf.summary.FileWriter(
+            get_run_dir(os.path.join(summary_dir, 'train')), graph)
+        self.validation_writer = tf.summary.FileWriter(
+            get_run_dir(os.path.join(summary_dir, 'validation')))
 
     def run(self, sess, batched_buffers, tensor=None):
-        # TODO
         feed_dict = {
-            self.color: batched_buffers['color'],
-            self.grad_x: batched_buffers['grad_x'],
-            self.grad_y: batched_buffers['grad_y'],
-            self.var_color: batched_buffers['var_color'],
-            self.var_features: batched_buffers['var_features'],
+            self.tf_buffers['color']: batched_buffers['color'],
+            self.tf_buffers['grad_x']: batched_buffers['grad_x'],
+            self.tf_buffers['grad_y']: batched_buffers['grad_y'],
+            self.tf_buffers['var_color']: batched_buffers['var_color'],
+            self.tf_buffers['var_features']: batched_buffers['var_features'],
         }
         if tensor is None:
             tensor = self.out  # tensor to evaluate
         return sess.run(tensor, feed_dict)
 
-    def run_train_step(self, sess, iteration):
-        # TODO
-        _, loss, loss_summary, gnorm = sess.run(
-            [self.opt_op, self.loss, self.loss_summary, self.gnorm])
-        self.train_writer.add_summary(loss_summary, iteration)
-        return loss, gnorm
-
-    def run_validation(self, sess):
-        # TODO
-        return sess.run([self.loss, self.color, self.out, self.gt_out])
-
     def restore(self, sess, restore_path, optimistic=False):
-        self.kpcn1.restore(sess, restore_path, optimistic)  # reuse vars, so should restore all
+        self.kpcn1.restore(sess, restore_path, optimistic=True)  # reuse vars, so should restore all
 
     def _scale_compositor(self, denoised_fine, denoised_coarse):
-        h, w = MultiscaleModel._get_spatial_dims(im)
+        h, w = MultiscaleModel._get_spatial_dims(denoised_fine)
         add_one = h % 2 == 1
-        with tf.variable_scope('scale_compositor', reuse=True):
-            alpha = tf.concat((denoised_fine, upsample2(denoised_coarse, add_one)), axis=-1)
+        with tf.variable_scope('scale_compositor', reuse=tf.AUTO_REUSE):
+            alpha = tf.concat((denoised_fine, self._upsample2(denoised_coarse, add_one)), axis=-1)
             alpha = tf.layers.conv2d(
                 alpha, filters=100, kernel_size=1, strides=1, padding='same', activation=None)
             alpha = self._residual_block(alpha, 0.9, self.is_training)
@@ -329,19 +364,19 @@ class MultiscaleModel(object):
             alpha = tf.nn.sigmoid(alpha)
             # blend fine and coarse images
             return denoised_fine \
-                - alpha * upsample2(downsample2(denoised_fine), add_one) \
-                + alpha * upsample2(denoised_coarse, add_one)
+                - alpha * self._upsample2(self._downsample2(denoised_fine), add_one) \
+                + alpha * self._upsample2(denoised_coarse, add_one)
 
     @staticmethod
     def _resize_all(buffers, new_height, new_width):
         """Resize image tensors in the BUFFERS dictionary to (new_height, new_width)."""
         return {k: tf.image.resize_images(v,
-            [new_height, new_width], method=ResizeMethod.BILINEAR) for k, v in buffers}
+            [new_height, new_width], method=tf.image.ResizeMethod.BILINEAR) for k, v in buffers.viewitems()}
 
     @staticmethod
     def _downsample2(im):
         h, w = MultiscaleModel._get_spatial_dims(im)
-        return tf.image.resize_images(im, [h // 2, w // 2], method=ResizeMethod.BILINEAR)
+        return tf.image.resize_images(im, [h // 2, w // 2], method=tf.image.ResizeMethod.BILINEAR)
 
     @staticmethod
     def _upsample2(im, add_one=False):
@@ -351,7 +386,7 @@ class MultiscaleModel(object):
             new_height += 1
             new_width  += 1
         return tf.image.resize_images(
-            im, [new_height, new_width], method=ResizeMethod.NEAREST_NEIGHBOR)
+            im, [new_height, new_width], method=tf.image.ResizeMethod.NEAREST_NEIGHBOR)
 
     @staticmethod
     def _get_spatial_dims(im):
@@ -366,7 +401,7 @@ class CombinedModel(object):
     """Diffuse + specular KPCNs."""
 
     def __init__(self, diff_kpcn, spec_kpcn, tf_buffers_comb, eps,
-                 learning_rate, summary_dir, clip_by_global_norm=False):
+                 learning_rate, summary_dir, fp16=False, clip_by_global_norm=False):
 
         self.diff_kpcn = diff_kpcn
         self.spec_kpcn = spec_kpcn
@@ -382,21 +417,30 @@ class CombinedModel(object):
         spec_out = tf_postprocess_specular(self.spec_kpcn.out)
         self.out = diff_out + spec_out
 
-        self.loss = tf.reduce_mean(tf.abs(self.out - self.gt_out), name='l1_loss')
+        loss = DKPCN._smape(self.out, self.gt_out)
+        loss = tf.verify_tensor_all_finite(loss, 'NaN or Inf in loss')
+        self.loss = tf.identity(loss, name='loss')
         self.loss_summary = tf.summary.scalar('loss', self.loss)
+
         self.global_step = tf.Variable(0, trainable=False, name='global_step')
         self.learning_rate = tf.train.exponential_decay(learning_rate, self.global_step, 100000, 0.96)
-        opt = tf.train.AdamOptimizer(self.learning_rate, epsilon=1e-4)
-        grads_and_vars = opt.compute_gradients(self.loss)
-        grads_and_vars = filter(lambda gv: None not in gv, grads_and_vars)
-        grads, _vars = zip(*grads_and_vars)
-        self.gnorm = tf.global_norm(grads, name='grad_norm')
-        if clip_by_global_norm:  # empirically not helpful
-            grads, _ = tf.clip_by_global_norm(grads, 0.5, use_norm=self.gnorm)
-            grads_and_vars = zip(grads, _vars)
-        # clip by value
-        grads_and_vars = [(tf.clip_by_value(grad, -1.0, 1.0), var) for grad, var in grads_and_vars]
-        self.opt_op = opt.apply_gradients(grads_and_vars, global_step=self.global_step)
+        if fp16:
+            opt = tf.train.AdamOptimizer(self.learning_rate, epsilon=1e-4)
+        else:
+            opt = tf.train.AdamOptimizer(self.learning_rate)
+        update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
+        with tf.control_dependencies(update_ops):  # for batch norm
+            grads_and_vars = opt.compute_gradients(self.loss)
+            grads_and_vars = filter(lambda gv: None not in gv, grads_and_vars)
+            grads, _vars = zip(*grads_and_vars)
+            self.gnorm = tf.global_norm(grads, name='grad_norm')
+            if clip_by_global_norm:  # empirically not helpful
+                grads, _ = tf.clip_by_global_norm(grads, 0.5, use_norm=self.gnorm)
+                grads_and_vars = zip(grads, _vars)
+            # clip by value
+            grads_and_vars = [(tf.clip_by_value(grad, -1.0, 1.0), var) for grad, var in grads_and_vars]
+            self.opt_op = opt.apply_gradients(grads_and_vars, global_step=self.global_step)
+
         self.train_writer = tf.summary.FileWriter(
             get_run_dir(os.path.join(summary_dir, 'train')))
         self.validation_writer = tf.summary.FileWriter(

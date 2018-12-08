@@ -14,7 +14,7 @@ from tqdm import tqdm
 import tensorflow as tf
 from scipy.misc import imsave
 
-from models import DKPCN, CombinedModel
+from models import DKPCN, MultiscaleModel, CombinedModel
 import data_utils as du
 
 class Denoiser(object):
@@ -32,7 +32,7 @@ class Denoiser(object):
     @staticmethod
     def _training_loop(sess, kpcn, train_init_op, val_init_op, identifier, log_freq,
                        save_freq, viz_freq, max_epochs, checkpoint_dir, block_on_viz,
-                       restore_path='', reset_lr=True, save_best=False):
+                       restore_path='', reset_lr=True, save_best=False, only_val=False):
         # initialize/restore
         sess.run(tf.group(
             tf.global_variables_initializer(), tf.local_variables_initializer()))
@@ -47,28 +47,30 @@ class Denoiser(object):
         min_avg_val_loss   = float('inf')
         try:
             for epoch in range(max_epochs):
-                # Training
-                sess.run(train_init_op)
-                total_loss, count = 0.0, 0
-                while True:
-                    try:
-                        loss, gnorm = kpcn.run_train_step(sess, i)
-                        total_loss += loss
-                        count += 1
-                        if (i + 1) % log_freq == 0:
-                            avg_loss = total_loss / count
-                            if avg_loss < min_avg_train_loss:
-                                min_avg_train_loss = avg_loss
-                            print('[step %07d] %s loss: %.5f | gnorm: %.7f' \
-                                % (i, identifier, avg_loss, gnorm))
-                            total_loss, count = 0.0, 0
-                        if (i + 1) % save_freq == 0 and not save_best:
-                            kpcn.save(sess, i, checkpoint_dir=checkpoint_dir)
-                            print('[o] Saved model.')
-                    except tf.errors.OutOfRangeError:
-                        break
-                    i += 1
-                print('[o][%s] Epoch %d training complete. Running validation...' % (identifier, epoch + 1,))
+                if not only_val:
+                    # Training
+                    sess.run(train_init_op)
+                    total_loss, count = 0.0, 0
+                    while True:
+                        try:
+                            loss, gnorm = kpcn.run_train_step(sess, i)
+                            total_loss += loss
+                            count += 1
+                            if (i + 1) % log_freq == 0:
+                                avg_loss = total_loss / count
+                                if avg_loss < min_avg_train_loss:
+                                    min_avg_train_loss = avg_loss
+                                print('[step %07d] %s loss: %.5f | gnorm: %.7f' \
+                                    % (i, identifier, avg_loss, gnorm))
+                                total_loss, count = 0.0, 0
+                            if (i + 1) % save_freq == 0 and not save_best:
+                                kpcn.save(sess, i, checkpoint_dir=checkpoint_dir)
+                                print('[o] Saved model.')
+                        except tf.errors.OutOfRangeError:
+                            break
+                        i += 1
+                    print('[o][%s] Epoch %d training complete.' % (identifier, epoch + 1,))
+                print('[o][%s] Running validation...' % identifier)
 
                 # Validation
                 sess.run(val_init_op)
@@ -76,7 +78,7 @@ class Denoiser(object):
                 while True:
                     try:
                         loss, _in, _out, _gt = kpcn.run_validation(sess)
-                        if count == 0 and viz_freq > 0 and (i + 1) % viz_freq == 0:
+                        if (count == 0 or only_val) and viz_freq > 0 and (i + 1) % viz_freq == 0:
                             du.show_multiple(_in, _out, _gt, block_on_viz=block_on_viz)
                         total_loss += loss
                         count += 1
@@ -124,9 +126,11 @@ class Denoiser(object):
         reset_lr       = config['train_params'].get('reset_lr', True)
         save_best      = config['train_params'].get('save_best', False)
         valid_padding  = config['kpcn'].get('valid_padding', False)
+        only_val       = config['train_params'].get('only_val', False)
 
         train_diff     = config['kpcn']['diff']['train_include']
         train_spec     = config['kpcn']['spec']['train_include']
+        multiscale     = config['kpcn'].get('multiscale', False)
 
         if type(learning_rate) == str:
             learning_rate = eval(learning_rate)
@@ -145,11 +149,13 @@ class Denoiser(object):
         with tf.Session(config=tf_config) as sess:
             # training loops
 
+            Model = DKPCN if not multiscale else MultiscaleModel
+
             if train_diff:
                 diff_checkpoint_dir = os.path.join(checkpoint_dir, 'diff')
                 diff_restore_path   = config['kpcn']['diff'].get('restore_path', '')
                 _tf_buffers = tf_buffers['diff'] if comb else tf_buffers
-                self.diff_kpcn = DKPCN(
+                self.diff_kpcn = Model(
                     _tf_buffers, patch_size, patch_size, layers_config, is_training,
                     learning_rate, summary_dir, scope='diffuse', save_best=save_best,
                     fp16=self.fp16, clip_by_global_norm=clip_by_global_norm,
@@ -159,7 +165,7 @@ class Denoiser(object):
                 spec_checkpoint_dir = os.path.join(checkpoint_dir, 'spec')
                 spec_restore_path   = config['kpcn']['spec'].get('restore_path', '')
                 _tf_buffers = tf_buffers['spec'] if comb else tf_buffers
-                self.spec_kpcn = DKPCN(
+                self.spec_kpcn = Model(
                     _tf_buffers, patch_size, patch_size, layers_config, is_training,
                     learning_rate, summary_dir, scope='specular', save_best=save_best,
                     fp16=self.fp16, clip_by_global_norm=clip_by_global_norm,
@@ -168,20 +174,20 @@ class Denoiser(object):
             if comb:
                 self.comb_kpcn      = CombinedModel(
                     self.diff_kpcn, self.spec_kpcn, tf_buffers['comb'], self.eps,
-                    learning_rate, summary_dir, clip_by_global_norm=clip_by_global_norm)
+                    learning_rate, summary_dir, fp16=self.fp16, clip_by_global_norm=clip_by_global_norm)
                 comb_checkpoint_dir = os.path.join(checkpoint_dir, 'comb')
                 restore_path        = (diff_restore_path, spec_restore_path)
                 self._training_loop(sess, self.comb_kpcn, init_ops['comb_train'], init_ops['comb_val'],
                     'comb', log_freq, save_freq, viz_freq, max_epochs, comb_checkpoint_dir, block_on_viz,
-                    restore_path, reset_lr, save_best)
+                    restore_path, reset_lr, save_best, only_val)
             elif train_diff:
                 self._training_loop(sess, self.diff_kpcn, init_ops['diff_train'], init_ops['diff_val'],
                     'diff', log_freq, save_freq, viz_freq, max_epochs, diff_checkpoint_dir, block_on_viz,
-                    diff_restore_path, reset_lr, save_best)
+                    diff_restore_path, reset_lr, save_best, only_val)
             elif train_spec:
                 self._training_loop(sess, self.spec_kpcn, init_ops['spec_train'], init_ops['spec_val'],
                     'spec', log_freq, save_freq, viz_freq, max_epochs, spec_checkpoint_dir, block_on_viz,
-                    spec_restore_path, reset_lr, save_best)
+                    spec_restore_path, reset_lr, save_best, only_val)
 
     def load_data(self, config, shuffle=True, comb=False):
         batch_size        = config['train_params'].get('batch_size', 5)
