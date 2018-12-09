@@ -13,6 +13,7 @@ from math import sqrt
 from tqdm import tqdm
 import tensorflow as tf
 from scipy.misc import imsave
+import tensorflow.contrib.tensorrt as trt
 
 from models import DKPCN, MultiscaleModel, CombinedModel
 import data_utils as du
@@ -485,6 +486,9 @@ class Denoiser(object):
         clip_ims        = config['data']['clip_ims']
         valid_padding   = config['kpcn'].get('valid_padding', False)
         multiscale      = config['kpcn'].get('multiscale', False)
+        use_trt         = config['evaluate'].get('use_trt', False)
+        diff_frozen     = config['kpcn']['diff'].get('frozen', '')
+        spec_frozen     = config['kpcn']['spec'].get('frozen', '')
 
         if type(learning_rate) == str:
             learning_rate = eval(learning_rate)
@@ -492,8 +496,13 @@ class Denoiser(object):
         asymmetric_loss     = config['train_params'].get('asymmetric_loss', True)
         clip_by_global_norm = config['train_params'].get('clip_by_global_norm', False)
 
-        tf_config = tf.ConfigProto(
-            device_count={'GPU': 1}, allow_soft_placement=True)
+        tf_config_kwargs = {
+            'device_count': {'GPU': 1},
+            'allow_soft_placement': True,
+        }
+        if use_trt:
+            tf_config_kwargs['gpu_options'] = tf.GPUOptions(per_process_gpu_memory_fraction=0.75)
+        tf_config = tf.ConfigProto(**tf_config_kwargs)
         with tf.Session(config=tf_config) as sess:
             if compute_error:
                 data_dir    = config['data']['data_dir']
@@ -532,47 +541,67 @@ class Denoiser(object):
                 l_spec_in = {c: data[:, :, :w//2+ks,  :] for c, data in spec_in.items()}
                 r_spec_in = {c: data[:, :, -w//2-ks:, :] for c, data in spec_in.items()}
 
-                if self.diff_kpcn is None:
-                    # define networks
-                    tf_placeholders = {
-                        'color':        tf.placeholder(self.tf_dtype, shape=(None, h, w // 2 + ks, 3)),
-                        'grad_x':       tf.placeholder(self.tf_dtype, shape=(None, h, w // 2 + ks, 10)),
-                        'grad_y':       tf.placeholder(self.tf_dtype, shape=(None, h, w // 2 + ks, 10)),
-                        'var_color':    tf.placeholder(self.tf_dtype, shape=(None, h, w // 2 + ks, 1)),
-                        'var_features': tf.placeholder(self.tf_dtype, shape=(None, h, w // 2 + ks, 3)),
-                        'gt_out':       tf.placeholder(self.tf_dtype, shape=(None, h, w // 2 + ks, 3)),  # not used
-                    }
-                    Model = DKPCN if not multiscale else MultiscaleModel
-                    self.diff_kpcn = Model(
-                        tf_placeholders, patch_size, patch_size, layers_config,
-                        is_training, learning_rate, summary_dir, scope='diffuse',
-                        fp16=self.fp16, clip_by_global_norm=clip_by_global_norm,
-                        valid_padding=valid_padding, asymmetric_loss=asymmetric_loss, sess=sess)
-                    self.spec_kpcn = Model(
-                        tf_placeholders, patch_size, patch_size, layers_config,
-                        is_training, learning_rate, summary_dir, scope='specular',
-                        fp16=self.fp16, clip_by_global_norm=clip_by_global_norm,
-                        valid_padding=valid_padding, asymmetric_loss=asymmetric_loss, sess=sess)
-                    diff_restore_path = config['kpcn']['diff'].get('restore_path', '')
-                    spec_restore_path = config['kpcn']['spec'].get('restore_path', '')
-                    if multiscale:
-                        diff_restore_path = (
-                            diff_restore_path, config['kpcn']['diff'].get('multiscale_restore_path', ''))
-                        spec_restore_path = (
-                            spec_restore_path, config['kpcn']['spec'].get('multiscale_restore_path', ''))
+                if use_trt:
+                    graph = tf.Graph()
+                    with graph.as_default():
+                        with tf.gfile.GFile(diff_frozen, 'rb') as f:
+                            gdef = tf.GraphDef()
+                            gdef.ParseFromString(f.read())
+                        # create TensorRT inference graph
+                        trt_graph = trt.create_inference_graph(
+                            input_graph_def=gdef,
+                            outputs=['diffuse/out'],
+                            max_batch_size=1,
+                            max_workspace_size_bytes=2000000000,  # 2GB
+                            precision_mode='FP16')
+                        diff_out = tf.import_graph_def(
+                            trt_graph, return_elements=['diffuse/out'])
+                        l_diff_out = sess.run(diff_out, feed_dict=l_diff_in)
+                        print(l_diff_out.shape)
+                        print('--- end trt debug')
+                else:
+                    if self.diff_kpcn is None:
+                        # define networks
+                        tf_placeholders = {
+                            'color':        tf.placeholder(self.tf_dtype, shape=(None, h, w // 2 + ks, 3)),
+                            'grad_x':       tf.placeholder(self.tf_dtype, shape=(None, h, w // 2 + ks, 10)),
+                            'grad_y':       tf.placeholder(self.tf_dtype, shape=(None, h, w // 2 + ks, 10)),
+                            'var_color':    tf.placeholder(self.tf_dtype, shape=(None, h, w // 2 + ks, 1)),
+                            'var_features': tf.placeholder(self.tf_dtype, shape=(None, h, w // 2 + ks, 3)),
+                            # not used
+                            'gt_out':       tf.placeholder(self.tf_dtype, shape=(None, h, w // 2 + ks, 3)),
+                        }
+                        Model = DKPCN if not multiscale else MultiscaleModel
+                        self.diff_kpcn = Model(
+                            tf_placeholders, patch_size, patch_size, layers_config,
+                            is_training, learning_rate, summary_dir, scope='diffuse',
+                            fp16=self.fp16, clip_by_global_norm=clip_by_global_norm,
+                            valid_padding=valid_padding, asymmetric_loss=asymmetric_loss, sess=sess)
+                        self.spec_kpcn = Model(
+                            tf_placeholders, patch_size, patch_size, layers_config,
+                            is_training, learning_rate, summary_dir, scope='specular',
+                            fp16=self.fp16, clip_by_global_norm=clip_by_global_norm,
+                            valid_padding=valid_padding, asymmetric_loss=asymmetric_loss, sess=sess)
+                        diff_restore_path = config['kpcn']['diff'].get('restore_path', '')
+                        spec_restore_path = config['kpcn']['spec'].get('restore_path', '')
+                        if multiscale:
+                            diff_restore_path = (
+                                diff_restore_path, config['kpcn']['diff'].get('multiscale_restore_path', ''))
+                            spec_restore_path = (
+                                spec_restore_path, config['kpcn']['spec'].get('multiscale_restore_path', ''))
 
-                    # initialize/restore
-                    sess.run(tf.group(
-                        tf.global_variables_initializer(), tf.local_variables_initializer()))
-                    self.diff_kpcn.restore(sess, diff_restore_path)
-                    self.spec_kpcn.restore(sess, spec_restore_path)
+                        # initialize/restore
+                        sess.run(tf.group(
+                            tf.global_variables_initializer(), tf.local_variables_initializer()))
+                        self.diff_kpcn.restore(sess, diff_restore_path)
+                        self.spec_kpcn.restore(sess, spec_restore_path)
 
-                start_time = time.time()
-                l_diff_out = self.diff_kpcn.run(sess, l_diff_in)
-                r_diff_out = self.diff_kpcn.run(sess, r_diff_in)
-                l_spec_out = self.spec_kpcn.run(sess, l_spec_in)
-                r_spec_out = self.spec_kpcn.run(sess, r_spec_in)
-                print('[o] graph execution time: %s' % du.format_seconds(time.time() - start_time))
+                    start_time = time.time()
+                    l_diff_out = self.diff_kpcn.run(sess, l_diff_in)
+                    r_diff_out = self.diff_kpcn.run(sess, r_diff_in)
+                    l_spec_out = self.spec_kpcn.run(sess, l_spec_in)
+                    r_spec_out = self.spec_kpcn.run(sess, r_spec_in)
+                    print('[o] graph execution time: %s' % du.format_seconds(time.time() - start_time))
 
                 # composite
                 diff_out = np.zeros((h, w, 3), dtype=np.float32)
@@ -605,6 +634,11 @@ class Denoiser(object):
                     _gt_out = np.concatenate(
                         [gt_buffers['R'], gt_buffers['G'], gt_buffers['B']], axis=-1)
                     gt_out = du.clip_and_gamma_correct(_gt_out)
+
+                    _mse = du.mse(_out, _gt_out)
+                    _mrse = du.mrse(_out, _gt_out)
+                    _dssim = du.dssim(_out, _gt_out)
+                    print('[o] MSE: %.7f | MrSE: %.7f | DSSIM: %.7f' % (_mse, _mrse, _dssim))
 
                 if compute_error:
                     diff_error = np.abs(diff_out - gt_buffers['diffuse'])
@@ -648,7 +682,7 @@ class Denoiser(object):
                         imsave(os.path.join(out_dir, _input_id + \
                             '_05_perceptual_spec_error.jpg'), perceptual_spec_error)
 
-                if viz_kernels:
+                if viz_kernels and not use_trt:
                     # get kernels for 6x6 region at random location
                     y = np.random.randint(3 + ks // 2, h - 3 - ks // 2)
                     x = np.random.randint(3 + ks // 2, w - 3 - ks // 2)

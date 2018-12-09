@@ -11,6 +11,7 @@ from math import sqrt, ceil
 from scipy.misc import imsave
 import matplotlib.pyplot as plt
 from scipy.signal import convolve
+from skimage.measure import compare_ssim
 from scipy.ndimage.filters import gaussian_filter
 
 MAX_DEPTH = 20.0  # empirical
@@ -776,6 +777,24 @@ def show_multiple(*ims, **kwargs):
             plt.close()
         except:
             pass  # in case user closes window herself
+
+# ===============================================
+# ERROR
+# ===============================================
+
+def mse(out, gt_out):
+    """Mean squared error."""
+    return np.mean((out - gt_out) ** 2)
+
+def mrse(out, gt_out):
+    """Mean relative squared error."""
+    return np.mean(((out - gt_out) ** 2) / (gt_out ** 2 + 1e-2))
+
+def dssim(out, gt_out):
+    """Structural dissimilarity."""
+    data_range = out.max() - out.min()
+    mssim = compare_ssim(out, gt_out, data_range=data_range)
+    return 1.0 - mssim  # also divide by 2?
 
 # ===============================================
 # FILESYSTEM I/O
