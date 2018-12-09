@@ -297,21 +297,20 @@ class MultiscaleModel(DKPCN):
             self.sc_scope = '/'.join([scope, 'scale_compositor'])
 
         h1, w1 = MultiscaleModel._get_spatial_dims(tf_buffers1['color'])
-        if is_training:
+        if is_training and (h1 % 4 != 0 or w1 % 4 != 0):
             # make dims % 4 == 0
-            while h1 % 4 != 0 or w1 % 4 != 0:
-                tf_buffers1 = self._trim1_all(tf_buffers1, (h1 % 4 > 0, w1 % 4 > 0))
-                h1, w1 = MultiscaleModel._get_spatial_dims(tf_buffers1['color'])
+            tf_buffers1 = self._trim_all(tf_buffers1, h1 % 4, w1 % 4)
+            h1, w1 = MultiscaleModel._get_spatial_dims(tf_buffers1['color'])
         self.tf_buffers1 = tf_buffers1
 
         tf_buffers2 = self._downsample2_all(
-            self._trim1_all(tf_buffers1, (h1 % 2 == 1, w1 % 2 == 1)))
+            self._trim_all(tf_buffers1, h1 % 2, w1 % 2))
         h2, w2 = MultiscaleModel._get_spatial_dims(tf_buffers2['color'])
         tf_buffers2['var_color']    = tf_buffers2['var_color']    / 4.0
         tf_buffers2['var_features'] = tf_buffers2['var_features'] / 4.0
 
         tf_buffers4 = self._downsample2_all(
-            self._trim1_all(tf_buffers2, (h2 % 2 == 1, w2 % 2 == 1)))
+            self._trim_all(tf_buffers2, h2 % 2, w2 % 2))
         h4, w4 = MultiscaleModel._get_spatial_dims(tf_buffers4['color'])
         tf_buffers4['var_color']    = tf_buffers4['var_color']    / 4.0
         tf_buffers4['var_features'] = tf_buffers4['var_features'] / 4.0
@@ -369,10 +368,10 @@ class MultiscaleModel(DKPCN):
             loss = tf.verify_tensor_all_finite(loss, 'NaN or Inf in loss')
             self.loss = tf.identity(loss, name='loss')
             self.loss_summary = tf.summary.scalar('ms_loss', self.loss)
-            alpha_wt = 0.05
+            alpha_wt = 0.01
             _loss = self.loss \
-                + alpha_wt * tf.maximum(0.2 - self.alpha2_mean, 0.0) \
-                + alpha_wt * tf.maximum(0.2 - self.alpha1_mean, 0.0)  # don't let alpha go to 0
+                + alpha_wt * tf.maximum(0.5 - self.alpha2_mean, 0.0) \
+                + alpha_wt * tf.maximum(0.5 - self.alpha1_mean, 0.0)  # don't let alpha go to 0
 
             # optimization
             self.global_step = tf.Variable(0, trainable=False, name='global_step')
@@ -463,13 +462,13 @@ class MultiscaleModel(DKPCN):
             print('[+] multiscale `%s` network restored from `%s`.' % (self.kpcn1.scope, ms_rpath))
 
     def _scale_compositor(self, denoised_fine, denoised_coarse):
-        hf, wf   = MultiscaleModel._get_spatial_dims(denoised_fine)
-        _denoised_fine = self._trim1(denoised_fine, (hf % 2 == 1, wf % 2 == 1))
-        UD_fine  = self._upsample2(self._downsample2(_denoised_fine))
+        h, w = MultiscaleModel._get_spatial_dims(denoised_fine)
+        _denoised_fine = self._trim(denoised_fine, h % 2, w % 2)
+        UD_fine = self._upsample2(self._downsample2(_denoised_fine))
         U_coarse = self._upsample2(denoised_coarse)
-        if hf % 2 == 1 or wf % 2 == 1:
-            UD_fine  = self._pad1(UD_fine,  (hf % 2 == 1, wf % 2 == 1))
-            U_coarse = self._pad1(U_coarse, (hf % 2 == 1, wf % 2 == 1))
+        if h % 2 == 1 or w % 2 == 1:
+            UD_fine  = self._pad1(UD_fine,  (h % 2 == 1, w % 2 == 1))
+            U_coarse = self._pad1(U_coarse, (h % 2 == 1, w % 2 == 1))
 
         with tf.variable_scope(self.sc_scope, reuse=tf.AUTO_REUSE):
             alpha = tf.concat((denoised_fine, U_coarse), axis=-1)
@@ -509,20 +508,17 @@ class MultiscaleModel(DKPCN):
                     im[:, :, :, i:i+1], _filter, output_shape, strides, padding='SAME'))
         return tf.concat(out, axis=-1)
 
-    def _trim1_all(self, buffers, which_dims):
+    def _trim_all(self, buffers, amt_y, amt_x):
         """Assumes that each image in BUFFERS is of shape (n, h, w, c)."""
         buffers_out = {}
         for k in buffers.viewkeys():
-            buffers_out[k] = self._trim1(buffers[k], which_dims)
+            buffers_out[k] = self._trim(buffers[k], amt_y, amt_x)
         return buffers_out
 
     @staticmethod
-    def _trim1(im, which_dims):
-        if which_dims[0]:
-            im = im[:, :-1, :, :]  # trim height by one
-        if which_dims[1]:
-            im = im[:, :, :-1, :]  # trim width by one
-        return im
+    def _trim(im, amt_y, amt_x):
+        _, h, w, _ = im.get_shape().as_list()
+        return im[:, :h-amt_y, :w-amt_x, :]
 
     @staticmethod
     def _pad1(im, which_dims):
