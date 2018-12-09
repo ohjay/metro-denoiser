@@ -33,7 +33,7 @@ class Denoiser(object):
     def _training_loop(sess, kpcn, train_init_op, val_init_op, identifier,
                        log_freq, save_freq, viz_freq, max_epochs, checkpoint_dir,
                        block_on_viz, restore_path='', reset_lr=True, save_best=False,
-                       only_val=False, dropout_keep_prob=0.7):
+                       only_val=False, dropout_keep_prob=0.7, aux_summary_write_freq=-1):
         # initialize/restore
         sess.run(tf.group(
             tf.global_variables_initializer(), tf.local_variables_initializer()))
@@ -65,11 +65,13 @@ class Denoiser(object):
                                 print('[step %07d] %s loss: %.5f | gnorm: %.7f' \
                                     % (i, identifier, avg_loss, gnorm))
                                 total_loss, count = 0.0, 0
-                                if merged_summaries is not None:
-                                    kpcn.train_writer.add_summary(merged_summaries, i)
                             if (i + 1) % save_freq == 0 and not save_best:
                                 kpcn.save(sess, i, checkpoint_dir=checkpoint_dir)
                                 print('[o] Saved model.')
+                            if aux_summary_write_freq > 0 \
+                                    and (i + 1) % aux_summary_write_freq == 0 \
+                                    and merged_summaries is not None:
+                                kpcn.train_writer.add_summary(merged_summaries, i)
                         except tf.errors.OutOfRangeError:
                             break
                         i += 1
@@ -131,6 +133,7 @@ class Denoiser(object):
         save_best      = config['train_params'].get('save_best', False)
         valid_padding  = config['kpcn'].get('valid_padding', False)
         only_val       = config['train_params'].get('only_val', False)
+        asum_wfreq     = config['train_params'].get('aux_summary_write_freq', -1)
 
         train_diff     = config['kpcn']['diff']['train_include']
         train_spec     = config['kpcn']['spec']['train_include']
@@ -190,15 +193,15 @@ class Denoiser(object):
                 restore_path        = (diff_restore_path, spec_restore_path)
                 self._training_loop(sess, self.comb_kpcn, init_ops['comb_train'], init_ops['comb_val'],
                     'comb', log_freq, save_freq, viz_freq, max_epochs, comb_checkpoint_dir, block_on_viz,
-                    restore_path, reset_lr, save_best, only_val, dropout_keep_prob)
+                    restore_path, reset_lr, save_best, only_val, dropout_keep_prob, asum_wfreq)
             elif train_diff:
                 self._training_loop(sess, self.diff_kpcn, init_ops['diff_train'], init_ops['diff_val'],
                     'diff', log_freq, save_freq, viz_freq, max_epochs, diff_checkpoint_dir, block_on_viz,
-                    diff_restore_path, reset_lr, save_best, only_val, dropout_keep_prob)
+                    diff_restore_path, reset_lr, save_best, only_val, dropout_keep_prob, asum_wfreq)
             elif train_spec:
                 self._training_loop(sess, self.spec_kpcn, init_ops['spec_train'], init_ops['spec_val'],
                     'spec', log_freq, save_freq, viz_freq, max_epochs, spec_checkpoint_dir, block_on_viz,
-                    spec_restore_path, reset_lr, save_best, only_val, dropout_keep_prob)
+                    spec_restore_path, reset_lr, save_best, only_val, dropout_keep_prob, asum_wfreq)
 
     def load_data(self, config, shuffle=True, comb=False):
         batch_size        = config['train_params'].get('batch_size', 5)

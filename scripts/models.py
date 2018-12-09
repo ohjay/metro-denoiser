@@ -289,6 +289,8 @@ class MultiscaleModel(DKPCN):
                  save_best=False, fp16=False, clip_by_global_norm=False,
                  valid_padding=False, asymmetric_loss=True, sess=None, reuse=False):
 
+        summaries = []
+
         self.tf_buffers = tf_buffers
         h, w = MultiscaleModel._get_spatial_dims(tf_buffers['color'])
 
@@ -318,6 +320,7 @@ class MultiscaleModel(DKPCN):
         self.out = self._scale_compositor(self.denoised2, self.denoised4)
         self.out = self._scale_compositor(self.denoised1, self.out)  # reuse vars, so same as first compositor
         self.alpha_mean = tf.reduce_mean(self.alpha)
+        summaries.append(tf.summary.image('multiscale/pred_alpha', self.alpha, max_outputs=1))
 
         self.color = self.kpcn1.color
         self.tvars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope='scale_compositor')
@@ -360,6 +363,7 @@ class MultiscaleModel(DKPCN):
             get_run_dir(os.path.join(summary_dir, 'train')), graph)
         self.validation_writer = tf.summary.FileWriter(
             get_run_dir(os.path.join(summary_dir, 'validation')))
+        self.merged_summaries = tf.summary.merge(summaries)
 
     def run(self, sess, batched_buffers, tensor=None):
         feed_dict = {
@@ -388,10 +392,10 @@ class MultiscaleModel(DKPCN):
             self.kpcn2.dropout_keep_prob: dropout_keep_prob,
             self.kpcn4.dropout_keep_prob: dropout_keep_prob,
         }
-        _, loss, loss_summary, gnorm = sess.run(
-            [self.opt_op, self.loss, self.loss_summary, self.gnorm], feed_dict)
+        _, loss, loss_summary, gnorm, merged_summaries = sess.run(
+            [self.opt_op, self.loss, self.loss_summary, self.gnorm, self.merged_summaries], feed_dict)
         self.train_writer.add_summary(loss_summary, iteration)
-        return loss, gnorm, None
+        return loss, gnorm, merged_summaries
 
     def run_validation(self, sess):
         feed_dict = {
