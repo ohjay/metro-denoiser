@@ -70,8 +70,6 @@ class DKPCN(object):
                             kernel = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES,
                                 '%s/%s/conv2d/kernel' % (self.scope, 'layer%d' % (i + j)))[0]
                             with tf.name_scope('summaries/layer%d' % (i + j)):
-                                summaries.append(
-                                    tf.summary.scalar('conv_kernel_mean', tf.reduce_mean(kernel)))
                                 summaries.append(tf.summary.histogram('conv_kernel_histogram', kernel))
                         elif layer['type'] == 'residual_block':
                             dropout = layer.get('dropout', True)
@@ -335,7 +333,8 @@ class MultiscaleModel(DKPCN):
             loss = tf.verify_tensor_all_finite(loss, 'NaN or Inf in loss')
             self.loss = tf.identity(loss, name='loss')
             self.loss_summary = tf.summary.scalar('%s/multiscale_loss' % scope, self.loss)
-            self.loss += 0.1 * tf.maximum(0.5 - self.alpha_mean, 0.0)  # utilize alpha (don't let it go to 0)
+            alpha_wt = 0.05
+            self.loss += alpha_wt * tf.maximum(0.5 - self.alpha_mean, 0.0)  # utilize alpha (don't let it go to 0)
 
             # optimization
             self.global_step = tf.Variable(0, trainable=False, name='global_step')
