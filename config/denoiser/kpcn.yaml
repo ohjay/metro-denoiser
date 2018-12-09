@@ -1,4 +1,4 @@
-op: train
+op: denoise
 # train, sample_data, visualize_data, denoise, compute_error
 
 data:
@@ -40,11 +40,12 @@ data:
 
 train_params:
   batch_size: 12
-  learning_rate: 1e-6
+  learning_rate: 1e-4
   reset_lr: True
   max_epochs: 1e4
   log_freq: 100
   save_freq: 2000
+  aux_summary_write_freq: 2000
   save_best: False  # if True, ignores `save_freq`
   only_val: False
   viz_freq: 1
@@ -58,23 +59,21 @@ train_params:
 
 kpcn:
   diff:
-    train_include: True
-    # restore_path: /home/owen/workspace/metro/scripts/checkpoints/diff_saved/var-169999
+    train_include: False
     # restore_path: /home/owen/workspace/metro/scripts/checkpoints/diff_saved/var-77999  # residual, chain 12 (nb)
-    restore_path: /home/owen/workspace/metro/scripts/checkpoints/comb/diff/var-93999  # fine-tuned version of above
-    # multiscale_restore_path: /home/owen/workspace/metro/scripts/checkpoints/diff/ms-var-11999
-    # restore_path: /home/owen/workspace/metro/scripts/checkpoints/diff/var-17999  # residual, chain 3
-    # restore_path: /home/owen/workspace/metro/scripts/checkpoints/diff_saved/var-3999  # conv9, trained on all
-    # restore_path: /home/owen/workspace/metro/scripts/checkpoints/diff/var-67999  # conv9 trained on some
+    # restore_path: /home/owen/workspace/metro/scripts/checkpoints/comb/diff/var-93999  # fine-tuned version of above
+    restore_path: /home/owen/workspace/metro/scripts/checkpoints/diff_saved/var-17999  # residual, chain 3
+    multiscale_restore_path: /home/owen/workspace/metro/scripts/checkpoints/diff/ms-var-21999  # residual, chain 3
+    # restore_path: /home/owen/workspace/metro/scripts/checkpoints/diff/var-1999  # conv9
+    frozen: /home/owen/workspace/metro/scripts/checkpoints/diff/frozen-var-3999.pb
   spec:
     train_include: True
-    # restore_path: /home/owen/workspace/metro/scripts/checkpoints/spec_saved/var-409999
     # restore_path: /home/owen/workspace/metro/scripts/checkpoints/spec_saved/var-235999  # residual, chain 12 (nb)
-    restore_path: /home/owen/workspace/metro/scripts/checkpoints/comb/spec/var-93999  # fine-tuned version of above
-    # multiscale_restore_path: /home/owen/workspace/metro/scripts/checkpoints/spec/ms-var-3999
-    # restore_path: /home/owen/workspace/metro/scripts/heckpoints/spec/var-15999  # residual, chain 3
-    # restore_path: /home/owen/workspace/metro/scripts/checkpoints/spec/var-5999  # conv9, trained on all
-    # restore_path: /home/owen/workspace/metro/scripts/checkpoints/comb/spec/var-1999  # conv9 trained on some
+    # restore_path: /home/owen/workspace/metro/scripts/checkpoints/comb/spec/var-93999  # fine-tuned version of above
+    restore_path: /home/owen/workspace/metro/scripts/checkpoints/spec_saved/var-15999  # residual, chain 3
+    multiscale_restore_path: /home/owen/workspace/metro/scripts/checkpoints/spec/ms-var-23999  # residual, chain 3
+    # restore_path: /home/owen/workspace/metro/scripts/checkpoints/spec/var-13999  # conv9
+    frozen: /home/owen/workspace/metro/scripts/checkpoints/spec/frozen-var-13999.pb
   valid_padding: False  # during training only
   multiscale: False
 
@@ -83,6 +82,7 @@ evaluate:
   out_dir: out
   write_error_ims: False
   viz_kernels: False
+  use_trt: False
 
 # -----------------
 # KPCN architecture
