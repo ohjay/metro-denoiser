@@ -333,8 +333,8 @@ class MultiscaleModel(DKPCN):
         self.denoised2 = tf.stop_gradient(self.kpcn2.out)
         self.denoised4 = tf.stop_gradient(self.kpcn4.out)
 
-        self.out, self.alpha2 = self._scale_compositor(self.denoised2, self.denoised4)
-        self.out, self.alpha1 = self._scale_compositor(self.denoised1, self.out)  # reuse vars
+        self.out2, self.alpha2 = self._scale_compositor(self.denoised2, self.denoised4)
+        self.out, self.alpha1 = self._scale_compositor(self.denoised1, self.out2)  # reuse vars
         self.alpha2_mean = tf.reduce_mean(self.alpha2)
         self.alpha1_mean = tf.reduce_mean(self.alpha1)
 
@@ -368,8 +368,13 @@ class MultiscaleModel(DKPCN):
             loss = tf.verify_tensor_all_finite(loss, 'NaN or Inf in loss')
             self.loss = tf.identity(loss, name='loss')
             self.loss_summary = tf.summary.scalar('ms_loss', self.loss)
+            _loss = self.loss
+            if is_training:
+                # we know that gt_out will have spatial dims % 4 == 0
+                coarse_wt = 0.9
+                _loss += coarse_wt * self._smape(self.out2, self._downsample2(self.gt_out))
             alpha_wt = 0.01
-            _loss = self.loss \
+            _loss += \
                 + alpha_wt * tf.maximum(0.5 - self.alpha2_mean, 0.0) \
                 + alpha_wt * tf.maximum(0.5 - self.alpha1_mean, 0.0)  # don't let alpha go to 0
 
