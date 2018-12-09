@@ -374,8 +374,7 @@ class MultiscaleModel(DKPCN):
                 coarse_wt = 0.9
                 _loss += coarse_wt * self._smape(self.out2, self._downsample2(self.gt_out))
             alpha_wt = 0.01
-            _loss += \
-                + alpha_wt * tf.maximum(0.5 - self.alpha2_mean, 0.0) \
+            _loss += alpha_wt * tf.maximum(0.5 - self.alpha2_mean, 0.0) \
                 + alpha_wt * tf.maximum(0.5 - self.alpha1_mean, 0.0)  # don't let alpha go to 0
 
             # optimization
