@@ -24,8 +24,9 @@ class DKPCN(object):
 
         self.buffer_h = buffer_h
         self.buffer_w = buffer_w
-        self.is_training = is_training
-        self.valid_padding = valid_padding and self.is_training
+        self.valid_padding = valid_padding and is_training
+
+        summaries = []  # to merge
 
         if scope is None:
             DKPCN.curr_index += 1
@@ -45,6 +46,9 @@ class DKPCN(object):
                 self.color, self.grad_x, self.grad_y, self.var_color, self.var_features), axis=3)
             out = tf_nan_to_num(out)
 
+            self.is_training = tf.placeholder(tf.bool, name='is_training')
+            self.dropout_keep_prob = tf.placeholder_with_default(1.0, shape=(), name='dropout_keep_prob')
+
             i = 0
             for layer in layers_config:
                 kernel_init = None
@@ -63,11 +67,17 @@ class DKPCN(object):
                                 out, layer['num_outputs'], layer['kernel_size'],
                                 strides=layer['stride'], padding=padding, activation=activation,
                                 kernel_initializer=kernel_init, name='conv2d')
+                            kernel = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES,
+                                '%s/%s/conv2d/kernel' % (self.scope, 'layer%d' % (i + j)))[0]
+                            with tf.name_scope('summaries/layer%d' % (i + j)):
+                                summaries.append(
+                                    tf.summary.scalar('conv_kernel_mean', tf.reduce_mean(kernel)))
+                                summaries.append(tf.summary.histogram('conv_kernel_histogram', kernel))
                         elif layer['type'] == 'residual_block':
-                            dropout_keep_prob = layer.get('dropout_keep_prob', None)
+                            dropout = layer.get('dropout', True)
                             out = self._residual_block(
-                                out, dropout_keep_prob, self.is_training, kernel_init,
-                                layer.get('num_outputs', 100), layer.get('kernel_size', 3))
+                                out, self.dropout_keep_prob, self.is_training, kernel_init,
+                                layer.get('num_outputs', 100), layer.get('kernel_size', 3), dropout=dropout)
                         elif layer['type'] == 'batch_normalization':
                             out = tf.layers.batch_normalization(
                                 out, training=self.is_training, name='batch_normalization')
@@ -134,6 +144,7 @@ class DKPCN(object):
             mtk = 1 if save_best else 5
             self.saver = tf.train.Saver(
                 tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope=self.scope), max_to_keep=mtk)
+            self.merged_summaries = tf.summary.merge(summaries)
 
     def _filter(self, color, kernels):
 
@@ -190,8 +201,8 @@ class DKPCN(object):
         return tf.maximum(tf.sign(x), 0.0)
 
     @staticmethod
-    def _residual_block(_in, dropout_keep_prob, is_training,
-                        kernel_init=None, num_outputs=100, kernel_size=3, batchnorm=True):
+    def _residual_block(_in, dropout_keep_prob, is_training, kernel_init=None,
+                        num_outputs=100, kernel_size=3, batchnorm=True, dropout=True):
         with tf.variable_scope('residual_block'):
             out = _in
             for k in range(2):
@@ -203,9 +214,7 @@ class DKPCN(object):
                         out = tf.layers.batch_normalization(
                             out, training=is_training, name='batch_normalization')
                 out = tf.nn.relu(out)
-                if isinstance(dropout_keep_prob, Number):
-                    if not is_training:
-                        dropout_keep_prob = 1.0
+                if dropout:
                     out = tf.nn.dropout(out, dropout_keep_prob)
         return _in + out
 
@@ -216,19 +225,29 @@ class DKPCN(object):
             self.grad_y: batched_buffers['grad_y'],
             self.var_color: batched_buffers['var_color'],
             self.var_features: batched_buffers['var_features'],
+            self.is_training: False,
+            self.dropout_keep_prob: 1.0,
         }
         if tensor is None:
             tensor = self.out  # tensor to evaluate
         return sess.run(tensor, feed_dict)
 
-    def run_train_step(self, sess, iteration):
-        _, loss, loss_summary, gnorm = sess.run(
-            [self.opt_op, self.loss, self.loss_summary, self.gnorm])
+    def run_train_step(self, sess, iteration, dropout_keep_prob):
+        feed_dict = {
+            self.is_training: True,
+            self.dropout_keep_prob: dropout_keep_prob,
+        }
+        _, loss, loss_summary, gnorm, merged_summaries = sess.run(
+            [self.opt_op, self.loss, self.loss_summary, self.gnorm, self.merged_summaries], feed_dict)
         self.train_writer.add_summary(loss_summary, iteration)
-        return loss, gnorm
+        return loss, gnorm, merged_summaries
 
     def run_validation(self, sess):
-        return sess.run([self.loss, self.color, self.out, self.gt_out])
+        feed_dict = {
+            self.is_training: False,
+            self.dropout_keep_prob: 1.0,
+        }
+        return sess.run([self.loss, self.color, self.out, self.gt_out], feed_dict)
 
     def save(self, sess, iteration, checkpoint_dir='checkpoints', write_meta_graph=True):
         if not os.path.exists(checkpoint_dir):
@@ -273,7 +292,6 @@ class MultiscaleModel(DKPCN):
                  valid_padding=False, asymmetric_loss=True, sess=None, reuse=False):
 
         self.tf_buffers = tf_buffers
-        self.is_training = is_training
         h, w = MultiscaleModel._get_spatial_dims(tf_buffers['color'])
 
         tf_buffers2 = self._resize_all(tf_buffers, h // 2, w // 2)
@@ -351,10 +369,41 @@ class MultiscaleModel(DKPCN):
             self.tf_buffers['grad_y']: batched_buffers['grad_y'],
             self.tf_buffers['var_color']: batched_buffers['var_color'],
             self.tf_buffers['var_features']: batched_buffers['var_features'],
+            self.kpcn1.is_training: False,
+            self.kpcn2.is_training: False,
+            self.kpcn4.is_training: False,
+            self.kpcn1.dropout_keep_prob: 1.0,
+            self.kpcn2.dropout_keep_prob: 1.0,
+            self.kpcn4.dropout_keep_prob: 1.0,
         }
         if tensor is None:
             tensor = self.out  # tensor to evaluate
         return sess.run(tensor, feed_dict)
+
+    def run_train_step(self, sess, iteration, dropout_keep_prob):
+        feed_dict = {
+            self.kpcn1.is_training: True,
+            self.kpcn2.is_training: True,
+            self.kpcn4.is_training: True,
+            self.kpcn1.dropout_keep_prob: dropout_keep_prob,
+            self.kpcn2.dropout_keep_prob: dropout_keep_prob,
+            self.kpcn4.dropout_keep_prob: dropout_keep_prob,
+        }
+        _, loss, loss_summary, gnorm = sess.run(
+            [self.opt_op, self.loss, self.loss_summary, self.gnorm], feed_dict)
+        self.train_writer.add_summary(loss_summary, iteration)
+        return loss, gnorm, None
+
+    def run_validation(self, sess):
+        feed_dict = {
+            self.kpcn1.is_training: False,
+            self.kpcn2.is_training: False,
+            self.kpcn4.is_training: False,
+            self.kpcn1.dropout_keep_prob: 1.0,
+            self.kpcn2.dropout_keep_prob: 1.0,
+            self.kpcn4.dropout_keep_prob: 1.0,
+        }
+        return sess.run([self.loss, self.color, self.out, self.gt_out], feed_dict)
 
     def save(self, sess, iteration, checkpoint_dir='checkpoints', write_meta_graph=True):
         if not os.path.exists(checkpoint_dir):
@@ -382,8 +431,8 @@ class MultiscaleModel(DKPCN):
             alpha = tf.concat((denoised_fine, self._upsample2(denoised_coarse, add_one)), axis=-1)
             alpha = tf.layers.conv2d(
                 alpha, filters=100, kernel_size=1, strides=1, padding='same', activation=tf.nn.relu)
-            alpha = self._residual_block(alpha, None, self.is_training, batchnorm=False)
-            alpha = self._residual_block(alpha, None, self.is_training, batchnorm=False)
+            alpha = self._residual_block(alpha, None, None, batchnorm=False, dropout=False)
+            alpha = self._residual_block(alpha, None, None, batchnorm=False, dropout=False)
             alpha = tf.layers.conv2d(
                 alpha, filters=1, kernel_size=1, strides=1, padding='same', activation=None)
             self.alpha = alpha = tf.nn.sigmoid(alpha)
@@ -485,19 +534,35 @@ class CombinedModel(object):
             self.spec_kpcn.var_color:    spec_batched_buffers['var_color'],
             self.spec_kpcn.var_features: spec_batched_buffers['var_features'],
             self.albedo:                 batched_albedo,
+            self.diff_kpcn.is_training: False,
+            self.spec_kpcn.is_training: False,
+            self.diff_kpcn.dropout_keep_prob: 1.0,
+            self.spec_kpcn.dropout_keep_prob: 1.0,
         }
         if tensor is None:
             tensor = self.out  # tensor to evaluate
         return sess.run(tensor, feed_dict)
 
-    def run_train_step(self, sess, iteration):
+    def run_train_step(self, sess, iteration, dropout_keep_prob):
+        feed_dict = {
+            self.diff_kpcn.is_training: True,
+            self.spec_kpcn.is_training: True,
+            self.diff_kpcn.dropout_keep_prob: dropout_keep_prob,
+            self.spec_kpcn.dropout_keep_prob: dropout_keep_prob,
+        }
         _, loss, loss_summary, gnorm = sess.run(
-            [self.opt_op, self.loss, self.loss_summary, self.gnorm])
+            [self.opt_op, self.loss, self.loss_summary, self.gnorm], feed_dict)
         self.train_writer.add_summary(loss_summary, iteration)
-        return loss, gnorm
+        return loss, gnorm, None
 
     def run_validation(self, sess):
-        return sess.run([self.loss, self.diff_kpcn.color, self.out, self.gt_out])
+        feed_dict = {
+            self.diff_kpcn.is_training: False,
+            self.spec_kpcn.is_training: False,
+            self.diff_kpcn.dropout_keep_prob: 1.0,
+            self.spec_kpcn.dropout_keep_prob: 1.0,
+        }
+        return sess.run([self.loss, self.diff_kpcn.color, self.out, self.gt_out], feed_dict)
 
     def save(self, sess, iteration, checkpoint_dir='checkpoints', write_meta_graph=True):
         self.diff_kpcn.save(sess, iteration, os.path.join(checkpoint_dir, 'diff'), write_meta_graph)

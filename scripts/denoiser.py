@@ -30,9 +30,10 @@ class Denoiser(object):
         self.tf_dtype = tf.float16 if self.fp16 else tf.float32
 
     @staticmethod
-    def _training_loop(sess, kpcn, train_init_op, val_init_op, identifier, log_freq,
-                       save_freq, viz_freq, max_epochs, checkpoint_dir, block_on_viz,
-                       restore_path='', reset_lr=True, save_best=False, only_val=False):
+    def _training_loop(sess, kpcn, train_init_op, val_init_op, identifier,
+                       log_freq, save_freq, viz_freq, max_epochs, checkpoint_dir,
+                       block_on_viz, restore_path='', reset_lr=True, save_best=False,
+                       only_val=False, dropout_keep_prob=0.7):
         # initialize/restore
         sess.run(tf.group(
             tf.global_variables_initializer(), tf.local_variables_initializer()))
@@ -53,7 +54,8 @@ class Denoiser(object):
                     total_loss, count = 0.0, 0
                     while True:
                         try:
-                            loss, gnorm = kpcn.run_train_step(sess, i)
+                            loss, gnorm, merged_summaries = \
+                                kpcn.run_train_step(sess, i, dropout_keep_prob)
                             total_loss += loss
                             count += 1
                             if (i + 1) % log_freq == 0:
@@ -63,6 +65,8 @@ class Denoiser(object):
                                 print('[step %07d] %s loss: %.5f | gnorm: %.7f' \
                                     % (i, identifier, avg_loss, gnorm))
                                 total_loss, count = 0.0, 0
+                                if merged_summaries is not None:
+                                    kpcn.train_writer.add_summary(merged_summaries, i)
                             if (i + 1) % save_freq == 0 and not save_best:
                                 kpcn.save(sess, i, checkpoint_dir=checkpoint_dir)
                                 print('[o] Saved model.')
@@ -139,6 +143,7 @@ class Denoiser(object):
 
         asymmetric_loss     = config['train_params'].get('asymmetric_loss', True)
         clip_by_global_norm = config['train_params'].get('clip_by_global_norm', False)
+        dropout_keep_prob   = config['train_params'].get('dropout_keep_prob', 0.7)
 
         # load data
         comb = train_diff and train_spec
@@ -185,15 +190,15 @@ class Denoiser(object):
                 restore_path        = (diff_restore_path, spec_restore_path)
                 self._training_loop(sess, self.comb_kpcn, init_ops['comb_train'], init_ops['comb_val'],
                     'comb', log_freq, save_freq, viz_freq, max_epochs, comb_checkpoint_dir, block_on_viz,
-                    restore_path, reset_lr, save_best, only_val)
+                    restore_path, reset_lr, save_best, only_val, dropout_keep_prob)
             elif train_diff:
                 self._training_loop(sess, self.diff_kpcn, init_ops['diff_train'], init_ops['diff_val'],
                     'diff', log_freq, save_freq, viz_freq, max_epochs, diff_checkpoint_dir, block_on_viz,
-                    diff_restore_path, reset_lr, save_best, only_val)
+                    diff_restore_path, reset_lr, save_best, only_val, dropout_keep_prob)
             elif train_spec:
                 self._training_loop(sess, self.spec_kpcn, init_ops['spec_train'], init_ops['spec_val'],
                     'spec', log_freq, save_freq, viz_freq, max_epochs, spec_checkpoint_dir, block_on_viz,
-                    spec_restore_path, reset_lr, save_best, only_val)
+                    spec_restore_path, reset_lr, save_best, only_val, dropout_keep_prob)
 
     def load_data(self, config, shuffle=True, comb=False):
         batch_size        = config['train_params'].get('batch_size', 5)

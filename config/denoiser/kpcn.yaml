@@ -40,7 +40,7 @@ data:
 
 train_params:
   batch_size: 12
-  learning_rate: 1e-4
+  learning_rate: 1e-6
   reset_lr: True
   max_epochs: 1e4
   log_freq: 100
@@ -54,20 +54,25 @@ train_params:
   fp16: False
   clip_by_global_norm: False  # empirically not helpful
   asymmetric_loss: True
+  dropout_keep_prob: 0.7
 
 kpcn:
   diff:
     train_include: True
     # restore_path: /home/owen/workspace/metro/scripts/checkpoints/diff_saved/var-169999
-    # restore_path: /home/owen/workspace/metro/scripts/checkpoints/diff_saved/var-77999  # raw, chain 12 (not bad)
+    # restore_path: /home/owen/workspace/metro/scripts/checkpoints/diff_saved/var-77999  # residual, chain 12 (nb)
+    restore_path: /home/owen/workspace/metro/scripts/checkpoints/comb/diff/var-93999  # fine-tuned version of above
     # multiscale_restore_path: /home/owen/workspace/metro/scripts/checkpoints/diff/ms-var-11999
+    # restore_path: /home/owen/workspace/metro/scripts/checkpoints/diff/var-17999  # residual, chain 3
     # restore_path: /home/owen/workspace/metro/scripts/checkpoints/diff_saved/var-3999  # conv9, trained on all
     # restore_path: /home/owen/workspace/metro/scripts/checkpoints/diff/var-67999  # conv9 trained on some
   spec:
-    train_include: False
+    train_include: True
     # restore_path: /home/owen/workspace/metro/scripts/checkpoints/spec_saved/var-409999
-    # restore_path: /home/owen/workspace/metro/scripts/checkpoints/spec_saved/var-235999  # raw, chain 12 (not bad)
+    # restore_path: /home/owen/workspace/metro/scripts/checkpoints/spec_saved/var-235999  # residual, chain 12 (nb)
+    restore_path: /home/owen/workspace/metro/scripts/checkpoints/comb/spec/var-93999  # fine-tuned version of above
     # multiscale_restore_path: /home/owen/workspace/metro/scripts/checkpoints/spec/ms-var-3999
+    # restore_path: /home/owen/workspace/metro/scripts/heckpoints/spec/var-15999  # residual, chain 3
     # restore_path: /home/owen/workspace/metro/scripts/checkpoints/spec/var-5999  # conv9, trained on all
     # restore_path: /home/owen/workspace/metro/scripts/checkpoints/comb/spec/var-1999  # conv9 trained on some
   valid_padding: False  # during training only
@@ -121,7 +126,7 @@ layers:
     kernel_init: xavier
     num_outputs: 100
     kernel_size: 3
-    dropout_keep_prob: 0.7  # to omit, use "x"
+    dropout: True
     chain: 12
 
   - type: conv2d
