@@ -200,21 +200,24 @@ class DKPCN(object):
         return tf.maximum(tf.sign(x), 0.0)
 
     @staticmethod
-    def _residual_block(_in, dropout_keep_prob, is_training, kernel_init=None,
-                        num_outputs=100, kernel_size=3, batchnorm=True, dropout=True):
-        with tf.variable_scope('residual_block'):
+    def _residual_block(_in, dropout_keep_prob, is_training,
+                        kernel_init=None, num_outputs=100, kernel_size=3,
+                        batchnorm=True, dropout=True, scope=None, use_names=False):
+        with tf.variable_scope(scope or 'residual_block'):
             out = _in
             for k in range(2):
+                conv_name = 'conv%d' % k if use_names else None
                 out = tf.layers.conv2d(
                     out, filters=num_outputs, kernel_size=kernel_size, strides=1,
-                    padding='same', activation=None, kernel_initializer=kernel_init)
+                    padding='same', activation=None, kernel_initializer=kernel_init, name=conv_name)
                 if batchnorm:
                     with tf.variable_scope("batchnorm%d" % k):
                         out = tf.layers.batch_normalization(
                             out, training=is_training, name='batch_normalization')
                 out = tf.nn.relu(out)
                 if dropout:
-                    out = tf.nn.dropout(out, dropout_keep_prob)
+                    dropout_name = 'dropout%d' % k if use_names else None
+                    out = tf.nn.dropout(out, dropout_keep_prob, name=dropout_name)
         return _in + out
 
     def run(self, sess, batched_buffers, tensor=None):
@@ -290,6 +293,12 @@ class MultiscaleModel(DKPCN):
                  save_best=False, fp16=False, clip_by_global_norm=False,
                  valid_padding=False, asymmetric_loss=True, sess=None, reuse=False):
 
+        # should pass these in from outside
+        coarse_wt = 0.9
+        alpha_wt = 0.01
+        GOOGLE_SCALE_COMPOSITOR = True
+        self.bicubic = GOOGLE_SCALE_COMPOSITOR
+
         summaries = []
         if scope is None:
             self.sc_scope = 'scale_compositor'
@@ -304,13 +313,13 @@ class MultiscaleModel(DKPCN):
         self.tf_buffers1 = tf_buffers1
 
         tf_buffers2 = self._downsample2_all(
-            self._trim_all(tf_buffers1, h1 % 2, w1 % 2))
+            self._trim_all(tf_buffers1, h1 % 2, w1 % 2), self.bicubic)
         h2, w2 = MultiscaleModel._get_spatial_dims(tf_buffers2['color'])
         tf_buffers2['var_color']    = tf_buffers2['var_color']    / 4.0
         tf_buffers2['var_features'] = tf_buffers2['var_features'] / 4.0
 
         tf_buffers4 = self._downsample2_all(
-            self._trim_all(tf_buffers2, h2 % 2, w2 % 2))
+            self._trim_all(tf_buffers2, h2 % 2, w2 % 2), self.bicubic)
         h4, w4 = MultiscaleModel._get_spatial_dims(tf_buffers4['color'])
         tf_buffers4['var_color']    = tf_buffers4['var_color']    / 4.0
         tf_buffers4['var_features'] = tf_buffers4['var_features'] / 4.0
@@ -333,10 +342,15 @@ class MultiscaleModel(DKPCN):
         self.denoised2 = tf.stop_gradient(self.kpcn2.out)
         self.denoised4 = tf.stop_gradient(self.kpcn4.out)
 
-        self.out2, self.alpha2 = self._scale_compositor(self.denoised2, self.denoised4)
-        self.out, self.alpha1 = self._scale_compositor(self.denoised1, self.out2)  # reuse vars
-        self.alpha2_mean = tf.reduce_mean(self.alpha2)
-        self.alpha1_mean = tf.reduce_mean(self.alpha1)
+        if GOOGLE_SCALE_COMPOSITOR:
+            self.out2 = self._google_scale_compositor(self.denoised2, self.denoised4)
+            self.out = self._google_scale_compositor(self.denoised1, self.out2)
+            self.alpha2 = self.alpha2_mean = self.alpha1 = self.alpha1_mean = None
+        else:
+            self.out2, self.alpha2 = self._scale_compositor(self.denoised2, self.denoised4)
+            self.out, self.alpha1 = self._scale_compositor(self.denoised1, self.out2)  # reuse vars
+            self.alpha2_mean = tf.reduce_mean(self.alpha2)
+            self.alpha1_mean = tf.reduce_mean(self.alpha1)
 
         _id = scope or 'x'
         to_log = [
@@ -346,13 +360,17 @@ class MultiscaleModel(DKPCN):
             ('%s/multiscale/color1_out'  % _id, self.denoised1),
             ('%s/multiscale/color2_out'  % _id, self.denoised2),
             ('%s/multiscale/color4_out'  % _id, self.denoised4),
-            ('%s/multiscale/pred_alpha2' % _id, self.alpha2),
-            ('%s/multiscale/pred_alpha1' % _id, self.alpha1),
         ]
+        if self.alpha2 is not None:
+            to_log.extend([
+                ('%s/multiscale/pred_alpha2' % _id, self.alpha2),
+                ('%s/multiscale/pred_alpha1' % _id, self.alpha1),
+            ])
         for name, im in to_log:
             summaries.append(tf.summary.image(name, im, max_outputs=1))
-        summaries.append(tf.summary.scalar('%s/multiscale/alpha2_mean' % _id, self.alpha2_mean))
-        summaries.append(tf.summary.scalar('%s/multiscale/alpha1_mean' % _id, self.alpha1_mean))
+        if self.alpha2_mean is not None:
+            summaries.append(tf.summary.scalar('%s/multiscale/alpha2_mean' % _id, self.alpha2_mean))
+            summaries.append(tf.summary.scalar('%s/multiscale/alpha1_mean' % _id, self.alpha1_mean))
 
         self.color = tf_buffers1['color']
         self.tvars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=self.sc_scope)
@@ -369,13 +387,12 @@ class MultiscaleModel(DKPCN):
             self.loss = tf.identity(loss, name='loss')
             self.loss_summary = tf.summary.scalar('ms_loss', self.loss)
             _loss = self.loss
-            if is_training:
+            if coarse_wt > 0 and is_training:
                 # we know that gt_out will have spatial dims % 4 == 0
-                coarse_wt = 0.9
-                _loss += coarse_wt * self._smape(self.out2, self._downsample2(self.gt_out))
-            alpha_wt = 0.01
-            _loss += alpha_wt * tf.maximum(0.5 - self.alpha2_mean, 0.0) \
-                + alpha_wt * tf.maximum(0.5 - self.alpha1_mean, 0.0)  # don't let alpha go to 0
+                _loss += coarse_wt * self._smape(self.out2, self._downsample2(self.gt_out, self.bicubic))
+            if alpha_wt > 0 and self.alpha2_mean is not None:
+                _loss += alpha_wt * tf.maximum(0.5 - self.alpha2_mean, 0.0) \
+                    + alpha_wt * tf.maximum(0.5 - self.alpha1_mean, 0.0)  # don't let alpha go to 0
 
             # optimization
             self.global_step = tf.Variable(0, trainable=False, name='global_step')
@@ -468,7 +485,7 @@ class MultiscaleModel(DKPCN):
     def _scale_compositor(self, denoised_fine, denoised_coarse):
         h, w = MultiscaleModel._get_spatial_dims(denoised_fine)
         _denoised_fine = self._trim(denoised_fine, h % 2, w % 2)
-        UD_fine = self._upsample2(self._downsample2(_denoised_fine))
+        UD_fine = self._upsample2(self._downsample2(_denoised_fine, self.bicubic))
         U_coarse = self._upsample2(denoised_coarse)
         if h % 2 == 1 or w % 2 == 1:
             UD_fine  = self._pad1(UD_fine,  (h % 2 == 1, w % 2 == 1))
@@ -477,27 +494,97 @@ class MultiscaleModel(DKPCN):
         with tf.variable_scope(self.sc_scope, reuse=tf.AUTO_REUSE):
             alpha = tf.concat((denoised_fine, U_coarse), axis=-1)
             alpha = tf.layers.conv2d(
-                alpha, filters=50, kernel_size=1, strides=1, padding='same', activation=tf.nn.relu)
-            alpha = self._residual_block(alpha, None, None, num_outputs=50, batchnorm=False, dropout=False)
-            alpha = self._residual_block(alpha, None, None, num_outputs=50, batchnorm=False, dropout=False)
+                alpha, filters=50, kernel_size=1, strides=1, padding='same', activation=tf.nn.relu, name='conv0')
+            alpha = self._residual_block(
+                alpha, None, None, num_outputs=50, batchnorm=False, dropout=False, scope='residual0', use_names=True)
+            alpha = self._residual_block(
+                alpha, None, None, num_outputs=50, batchnorm=False, dropout=False, scope='residual1', use_names=True)
             alpha = tf.layers.conv2d(
-                alpha, filters=1, kernel_size=1, strides=1, padding='same', activation=tf.nn.sigmoid)
+                alpha, filters=1, kernel_size=1, strides=1, padding='same', activation=tf.nn.sigmoid, name='conv1')
             # blend fine and coarse images
             blend = denoised_fine + alpha * (U_coarse - UD_fine)
             return blend, alpha
 
-    def _downsample2_all(self, buffers):
-        return {name: self._downsample2(im) for name, im in buffers.viewitems()}
+    def _google_scale_compositor(self, denoised_fine, denoised_coarse):
+        h, w = MultiscaleModel._get_spatial_dims(denoised_fine)
+        assert h % 2 == 0 and w % 2 == 0
+
+        ks = 21  # predicted kernel size
+
+        with tf.variable_scope(self.sc_scope, reuse=tf.AUTO_REUSE):
+            kernels = tf.concat((denoised_fine, self._upsample2(denoised_coarse)), axis=-1)
+            kernels = tf.layers.conv2d(
+                kernels, 100, 5, strides=1, padding='same', activation=tf.nn.relu, name='conv0')
+            kernels = self._residual_block(
+                kernels, None, None, num_outputs=100, kernel_size=5,
+                batchnorm=False, dropout=False, scope='residual0', use_names=True)
+            kernels = self._residual_block(
+                kernels, None, None, num_outputs=100, kernel_size=5,
+                batchnorm=False, dropout=False, scope='residual1', use_names=True)
+            kernels = self._residual_block(
+                kernels, None, None, num_outputs=100, kernel_size=5,
+                batchnorm=False, dropout=False, scope='residual2', use_names=True)
+            kernels = self._residual_block(
+                kernels, None, None, num_outputs=100, kernel_size=5,
+                batchnorm=False, dropout=False, scope='residual3', use_names=True)
+            kernels = tf.layers.conv2d(
+                kernels, ks * ks, 5, strides=1, padding='same', activation=None, name='conv1')
+            kernels = tf.nn.softmax(kernels - tf.reduce_max(kernels, axis=-1, keepdims=True), axis=-1)
+            upsampled_blend_coarse = self._upsample2_filter(denoised_coarse, kernels, ks)
+            return tf.maximum(denoised_fine + upsampled_blend_coarse, 0.0)
+
+    def _upsample2_filter(self, im, kernels, kernel_size):
+        _, h, w, c = im.get_shape().as_list()
+        kernel_radius = kernel_size // 2
+        im = tf.pad(im, [[0, 0], [kernel_radius, kernel_radius], [kernel_radius, kernel_radius], [0, 0]])
+
+        filtered_channels = []
+        for ch in range(3):
+            color_channel = im[:, :, :, ch]
+            color_channel = tf.expand_dims(color_channel, -1)
+            color_channel = tf.extract_image_patches(
+                color_channel, ksizes=[1, kernel_size, kernel_size, 1],
+                strides=[1, 1, 1, 1], rates=[1, 1, 1, 1], padding='VALID')
+
+            tl = tf.reduce_sum(color_channel * kernels[:,  ::2,  ::2, :], axis=-1)
+            bl = tf.reduce_sum(color_channel * kernels[:, 1::2,  ::2, :], axis=-1)
+            tr = tf.reduce_sum(color_channel * kernels[:,  ::2, 1::2, :], axis=-1)
+            br = tf.reduce_sum(color_channel * kernels[:, 1::2, 1::2, :], axis=-1)
+            l  = self._interleave(tl, bl, direction='y')  # vertically interleave top and bottom left
+            r  = self._interleave(tr, br, direction='y')  # vertically interleave top and bottom right
+            filtered_channels.append(
+                self._interleave(l, r, direction='x'))
+
+        return tf.stack(filtered_channels, axis=3)
 
     @staticmethod
-    def _downsample2(im):
-        _, _, _, c = im.get_shape().as_list()
-        _filter = tf.constant(0.25, shape=[2, 2, 1, 1])
-        out = []
-        for i in range(c):
-            out.append(
-                tf.nn.conv2d(im[:, :, :, i:i+1], _filter, strides=[1, 2, 2, 1], padding='SAME'))
-        return tf.concat(out, axis=-1)
+    def _interleave(im0, im1, direction='y'):
+        """Reference: https://stackoverflow.com/a/52200014."""
+        if direction == 'y':
+            odd      = tf.concat([im0[:, ::2], im1[:, ::2]], axis=1)
+            even_odd = tf.concat([odd[:, ::2], tf.concat([im0[:, 1::2], im1[:, 1::2]], axis=1)], axis=1)
+            return tf.concat([even_odd, odd[:, 1::2]], axis=1)
+        else:
+            odd      = tf.concat([im0[:, :, ::2], im1[:, :, ::2]], axis=2)
+            even_odd = tf.concat([odd[:, :, ::2], tf.concat([im0[:, :, 1::2], im1[:, :, 1::2]], axis=2)], axis=2)
+            return tf.concat([even_odd, odd[:, :, 1::2]], axis=2)
+
+    def _downsample2_all(self, buffers, bicubic=False):
+        return {name: self._downsample2(im, bicubic) for name, im in buffers.viewitems()}
+
+    @staticmethod
+    def _downsample2(im, bicubic=False):
+        if bicubic:
+            _, h, w, _ = im.get_shape().as_list()
+            return tf.image.resize_bicubic(im, (h // 2, w // 2))
+        else:
+            _, _, _, c = im.get_shape().as_list()
+            _filter = tf.constant(0.25, shape=[2, 2, 1, 1])
+            out = []
+            for i in range(c):
+                out.append(
+                    tf.nn.conv2d(im[:, :, :, i:i+1], _filter, strides=[1, 2, 2, 1], padding='SAME'))
+            return tf.concat(out, axis=-1)
 
     @staticmethod
     def _upsample2(im):

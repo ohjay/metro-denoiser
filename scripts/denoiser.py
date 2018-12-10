@@ -244,6 +244,7 @@ class Denoiser(object):
             return dataset.interleave(tf.data.TFRecordDataset, cycle_length=min(750, len(filenames)))
 
         def merge_datasets(dataset0, dataset1):
+            """Source: https://stackoverflow.com/a/47344405."""
             return tf.data.Dataset.zip((dataset0, dataset1)).flat_map(
                 lambda x0, x1: tf.data.Dataset.from_tensors(x0).concatenate(
                     tf.data.Dataset.from_tensors(x1)))
