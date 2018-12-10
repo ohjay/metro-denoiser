@@ -139,6 +139,7 @@ class Denoiser(object):
         train_diff     = config['kpcn']['diff']['train_include']
         train_spec     = config['kpcn']['spec']['train_include']
         multiscale     = config['kpcn'].get('multiscale', False)
+        single_network = config['kpcn'].get('single_network', False)
 
         if type(learning_rate) == str:
             learning_rate = eval(learning_rate)
@@ -151,7 +152,7 @@ class Denoiser(object):
 
         # load data
         comb = train_diff and train_spec
-        tf_buffers, init_ops = self.load_data(config, comb=comb)
+        tf_buffers, init_ops = self.load_data(config, comb=comb, single_network=single_network)
 
         tf_config = tf.ConfigProto(
             device_count={'GPU': 1}, allow_soft_placement=True)
@@ -160,51 +161,67 @@ class Denoiser(object):
 
             Model = DKPCN if not multiscale else MultiscaleModel
 
-            if train_diff:
-                diff_checkpoint_dir = os.path.join(checkpoint_dir, 'diff')
-                diff_restore_path   = config['kpcn']['diff'].get('restore_path', '')
+            if single_network:
+                checkpoint_dir = os.path.join(checkpoint_dir, 'single')
+                restore_path = config['kpcn'].get('single_restore_path', '')
                 if multiscale:
-                    diff_restore_path = (
-                        diff_restore_path, config['kpcn']['diff'].get('multiscale_restore_path', ''))
-                _tf_buffers = tf_buffers['diff'] if comb else tf_buffers
-                self.diff_kpcn = Model(
-                    _tf_buffers, patch_size, patch_size, layers_config, is_training,
-                    learning_rate, summary_dir, scope='diffuse', save_best=save_best,
+                    restore_path = (
+                        restore_path, config['kpcn'].get('single_multiscale_restore_path', ''))
+                kpcn = Model(
+                    tf_buffers, patch_size, patch_size, layers_config, is_training,
+                    learning_rate, summary_dir, scope='single', save_best=save_best,
                     fp16=self.fp16, clip_by_global_norm=clip_by_global_norm,
                     valid_padding=valid_padding, asymmetric_loss=asymmetric_loss, sess=sess)
-
-            if train_spec:
-                spec_checkpoint_dir = os.path.join(checkpoint_dir, 'spec')
-                spec_restore_path   = config['kpcn']['spec'].get('restore_path', '')
-                if multiscale:
-                    spec_restore_path = (
-                        spec_restore_path, config['kpcn']['spec'].get('multiscale_restore_path', ''))
-                _tf_buffers = tf_buffers['spec'] if comb else tf_buffers
-                self.spec_kpcn = Model(
-                    _tf_buffers, patch_size, patch_size, layers_config, is_training,
-                    learning_rate, summary_dir, scope='specular', save_best=save_best,
-                    fp16=self.fp16, clip_by_global_norm=clip_by_global_norm,
-                    valid_padding=valid_padding, asymmetric_loss=asymmetric_loss, sess=sess)
-
-            if comb:
-                self.comb_kpcn      = CombinedModel(
-                    self.diff_kpcn, self.spec_kpcn, tf_buffers['comb'], self.eps,
-                    learning_rate, summary_dir, fp16=self.fp16, clip_by_global_norm=clip_by_global_norm)
-                comb_checkpoint_dir = os.path.join(checkpoint_dir, 'comb')
-                restore_path        = (diff_restore_path, spec_restore_path)
-                self._training_loop(sess, self.comb_kpcn, init_ops['comb_train'], init_ops['comb_val'],
-                    'comb', log_freq, save_freq, viz_freq, max_epochs, comb_checkpoint_dir, block_on_viz,
+                self.diff_kpcn = self.spec_kpcn = kpcn
+                self._training_loop(sess, kpcn, init_ops['train'], init_ops['val'],
+                    'single', log_freq, save_freq, viz_freq, max_epochs, checkpoint_dir, block_on_viz,
                     restore_path, reset_lr, save_best, only_val, dropout_keep_prob, asum_wfreq)
-            elif train_diff:
-                self._training_loop(sess, self.diff_kpcn, init_ops['diff_train'], init_ops['diff_val'],
-                    'diff', log_freq, save_freq, viz_freq, max_epochs, diff_checkpoint_dir, block_on_viz,
-                    diff_restore_path, reset_lr, save_best, only_val, dropout_keep_prob, asum_wfreq)
-            elif train_spec:
-                self._training_loop(sess, self.spec_kpcn, init_ops['spec_train'], init_ops['spec_val'],
-                    'spec', log_freq, save_freq, viz_freq, max_epochs, spec_checkpoint_dir, block_on_viz,
-                    spec_restore_path, reset_lr, save_best, only_val, dropout_keep_prob, asum_wfreq)
+            else:
+                if train_diff:
+                    diff_checkpoint_dir = os.path.join(checkpoint_dir, 'diff')
+                    diff_restore_path   = config['kpcn']['diff'].get('restore_path', '')
+                    if multiscale:
+                        diff_restore_path = (
+                            diff_restore_path, config['kpcn']['diff'].get('multiscale_restore_path', ''))
+                    _tf_buffers = tf_buffers['diff'] if comb else tf_buffers
+                    self.diff_kpcn = Model(
+                        _tf_buffers, patch_size, patch_size, layers_config, is_training,
+                        learning_rate, summary_dir, scope='diffuse', save_best=save_best,
+                        fp16=self.fp16, clip_by_global_norm=clip_by_global_norm,
+                        valid_padding=valid_padding, asymmetric_loss=asymmetric_loss, sess=sess)
 
-    def load_data(self, config, shuffle=True, comb=False):
+                if train_spec:
+                    spec_checkpoint_dir = os.path.join(checkpoint_dir, 'spec')
+                    spec_restore_path   = config['kpcn']['spec'].get('restore_path', '')
+                    if multiscale:
+                        spec_restore_path = (
+                            spec_restore_path, config['kpcn']['spec'].get('multiscale_restore_path', ''))
+                    _tf_buffers = tf_buffers['spec'] if comb else tf_buffers
+                    self.spec_kpcn = Model(
+                        _tf_buffers, patch_size, patch_size, layers_config, is_training,
+                        learning_rate, summary_dir, scope='specular', save_best=save_best,
+                        fp16=self.fp16, clip_by_global_norm=clip_by_global_norm,
+                        valid_padding=valid_padding, asymmetric_loss=asymmetric_loss, sess=sess)
+
+                if comb:
+                    self.comb_kpcn      = CombinedModel(
+                        self.diff_kpcn, self.spec_kpcn, tf_buffers['comb'], self.eps,
+                        learning_rate, summary_dir, fp16=self.fp16, clip_by_global_norm=clip_by_global_norm)
+                    comb_checkpoint_dir = os.path.join(checkpoint_dir, 'comb')
+                    restore_path        = (diff_restore_path, spec_restore_path)
+                    self._training_loop(sess, self.comb_kpcn, init_ops['comb_train'], init_ops['comb_val'],
+                        'comb', log_freq, save_freq, viz_freq, max_epochs, comb_checkpoint_dir, block_on_viz,
+                        restore_path, reset_lr, save_best, only_val, dropout_keep_prob, asum_wfreq)
+                elif train_diff:
+                    self._training_loop(sess, self.diff_kpcn, init_ops['diff_train'], init_ops['diff_val'],
+                        'diff', log_freq, save_freq, viz_freq, max_epochs, diff_checkpoint_dir, block_on_viz,
+                        diff_restore_path, reset_lr, save_best, only_val, dropout_keep_prob, asum_wfreq)
+                elif train_spec:
+                    self._training_loop(sess, self.spec_kpcn, init_ops['spec_train'], init_ops['spec_val'],
+                        'spec', log_freq, save_freq, viz_freq, max_epochs, spec_checkpoint_dir, block_on_viz,
+                        spec_restore_path, reset_lr, save_best, only_val, dropout_keep_prob, asum_wfreq)
+
+    def load_data(self, config, shuffle=True, comb=False, single_network=False):
         batch_size        = config['train_params'].get('batch_size', 5)
         patch_size        = config['data'].get('patch_size', 65)
         tfrecord_dir      = config['data']['tfrecord_dir']
@@ -225,6 +242,11 @@ class Denoiser(object):
             dataset = tf.data.Dataset.from_tensor_slices(filenames)
             dataset = dataset.shuffle(len(filenames))
             return dataset.interleave(tf.data.TFRecordDataset, cycle_length=min(750, len(filenames)))
+
+        def merge_datasets(dataset0, dataset1):
+            return tf.data.Dataset.zip((dataset0, dataset1)).flat_map(
+                lambda x0, x1: tf.data.Dataset.from_tensors(x0).concatenate(
+                    tf.data.Dataset.from_tensors(x1)))
 
         with tf.device('/cpu:0'):
             if shuffle and shuffle_filenames:
@@ -255,6 +277,11 @@ class Denoiser(object):
                     'diff_val': val_dataset.map(decode_diff, num_parallel_calls=4),
                     'spec_val': val_dataset.map(decode_spec, num_parallel_calls=4),
                 }
+                if single_network:
+                    datasets = {
+                        'train': merge_datasets(datasets['diff_train'], datasets['spec_train']),
+                        'val': merge_datasets(datasets['diff_val'], datasets['spec_val']),
+                    }
             for comp in datasets:
                 if comp.endswith('train'):
                     dataset_size = min(train_dataset_size_estimate, size_lim)
@@ -319,10 +346,18 @@ class Denoiser(object):
                 color, normal, albedo, depth, var_color, var_features, gt_out = iterator.get_next()
 
                 # initializers
-                diff_train_init_op = iterator.make_initializer(datasets['diff_train'])
-                spec_train_init_op = iterator.make_initializer(datasets['spec_train'])
-                diff_val_init_op   = iterator.make_initializer(datasets['diff_val'])
-                spec_val_init_op   = iterator.make_initializer(datasets['spec_val'])
+                if single_network:
+                    init_ops = {
+                        'train': iterator.make_initializer(datasets['train']),
+                        'val':   iterator.make_initializer(datasets['val']),
+                    }
+                else:
+                    init_ops = {
+                        'diff_train': iterator.make_initializer(datasets['diff_train']),
+                        'spec_train': iterator.make_initializer(datasets['spec_train']),
+                        'diff_val':   iterator.make_initializer(datasets['diff_val']),
+                        'spec_val':   iterator.make_initializer(datasets['spec_val']),
+                    }
 
                 # compute gradients
                 grad_y_color, grad_x_color = tf.image.image_gradients(color)
@@ -340,12 +375,6 @@ class Denoiser(object):
                     'var_color': var_color,
                     'var_features': var_features,
                     'gt_out': gt_out,
-                }
-                init_ops = {
-                    'diff_train': diff_train_init_op,
-                    'spec_train': spec_train_init_op,
-                    'diff_val': diff_val_init_op,
-                    'spec_val': spec_val_init_op,
                 }
 
         return tf_buffers, init_ops
@@ -489,6 +518,7 @@ class Denoiser(object):
         use_trt         = config['evaluate'].get('use_trt', False)
         diff_frozen     = config['kpcn']['diff'].get('frozen', '')
         spec_frozen     = config['kpcn']['spec'].get('frozen', '')
+        single_network  = config['kpcn'].get('single_network', False)
 
         if type(learning_rate) == str:
             learning_rate = eval(learning_rate)
@@ -572,29 +602,45 @@ class Denoiser(object):
                             'gt_out':       tf.placeholder(self.tf_dtype, shape=(None, h, w // 2 + ks, 3)),
                         }
                         Model = DKPCN if not multiscale else MultiscaleModel
-                        self.diff_kpcn = Model(
-                            tf_placeholders, patch_size, patch_size, layers_config,
-                            is_training, learning_rate, summary_dir, scope='diffuse',
-                            fp16=self.fp16, clip_by_global_norm=clip_by_global_norm,
-                            valid_padding=valid_padding, asymmetric_loss=asymmetric_loss, sess=sess)
-                        self.spec_kpcn = Model(
-                            tf_placeholders, patch_size, patch_size, layers_config,
-                            is_training, learning_rate, summary_dir, scope='specular',
-                            fp16=self.fp16, clip_by_global_norm=clip_by_global_norm,
-                            valid_padding=valid_padding, asymmetric_loss=asymmetric_loss, sess=sess)
-                        diff_restore_path = config['kpcn']['diff'].get('restore_path', '')
-                        spec_restore_path = config['kpcn']['spec'].get('restore_path', '')
-                        if multiscale:
-                            diff_restore_path = (
-                                diff_restore_path, config['kpcn']['diff'].get('multiscale_restore_path', ''))
-                            spec_restore_path = (
-                                spec_restore_path, config['kpcn']['spec'].get('multiscale_restore_path', ''))
+                        if single_network:
+                            kpcn = Model(
+                                tf_placeholders, patch_size, patch_size, layers_config,
+                                is_training, learning_rate, summary_dir, scope='single',
+                                fp16=self.fp16, clip_by_global_norm=clip_by_global_norm,
+                                valid_padding=valid_padding, asymmetric_loss=asymmetric_loss, sess=sess)
+                            restore_path = config['kpcn'].get('single_restore_path', '')
+                            if multiscale:
+                                restore_path = (
+                                    restore_path, config['kpcn'].get('single_multiscale_restore_path', ''))
+                            # initialize/restore
+                            sess.run(tf.group(
+                                tf.global_variables_initializer(), tf.local_variables_initializer()))
+                            kpcn.restore(sess, restore_path)
+                            self.diff_kpcn = self.spec_kpcn = kpcn
+                        else:
+                            self.diff_kpcn = Model(
+                                tf_placeholders, patch_size, patch_size, layers_config,
+                                is_training, learning_rate, summary_dir, scope='diffuse',
+                                fp16=self.fp16, clip_by_global_norm=clip_by_global_norm,
+                                valid_padding=valid_padding, asymmetric_loss=asymmetric_loss, sess=sess)
+                            self.spec_kpcn = Model(
+                                tf_placeholders, patch_size, patch_size, layers_config,
+                                is_training, learning_rate, summary_dir, scope='specular',
+                                fp16=self.fp16, clip_by_global_norm=clip_by_global_norm,
+                                valid_padding=valid_padding, asymmetric_loss=asymmetric_loss, sess=sess)
+                            diff_restore_path = config['kpcn']['diff'].get('restore_path', '')
+                            spec_restore_path = config['kpcn']['spec'].get('restore_path', '')
+                            if multiscale:
+                                diff_restore_path = (
+                                    diff_restore_path, config['kpcn']['diff'].get('multiscale_restore_path', ''))
+                                spec_restore_path = (
+                                    spec_restore_path, config['kpcn']['spec'].get('multiscale_restore_path', ''))
 
-                        # initialize/restore
-                        sess.run(tf.group(
-                            tf.global_variables_initializer(), tf.local_variables_initializer()))
-                        self.diff_kpcn.restore(sess, diff_restore_path)
-                        self.spec_kpcn.restore(sess, spec_restore_path)
+                            # initialize/restore
+                            sess.run(tf.group(
+                                tf.global_variables_initializer(), tf.local_variables_initializer()))
+                            self.diff_kpcn.restore(sess, diff_restore_path)
+                            self.spec_kpcn.restore(sess, spec_restore_path)
 
                     start_time = time.time()
                     l_diff_out = self.diff_kpcn.run(sess, l_diff_in)
