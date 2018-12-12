@@ -835,3 +835,7 @@ def format_seconds(s):
         format_str = SEC_FORMAT_STR
 
     return format_str.format(d=days, h=hours, m=minutes, s=s)
+
+def crop_buffers(buffers, y0, y1, x0, x1):
+    for k in buffers:
+        buffers[k] = buffers[k][y0:y1, x0:x1]

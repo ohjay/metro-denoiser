@@ -559,6 +559,9 @@ class Denoiser(object):
                     raise TypeError('[-] Filetype%s not supported yet.' % filetype_str)
                 print('[o] Denoising %s...' % os.path.basename(im_path))
 
+                # (temp) for smaller images
+                # du.crop_buffers(input_buffers, 110, -110, 160, -560)
+
                 h, w = input_buffers['diffuse'].shape[:2]
                 ks = int(sqrt(layers_config[-1]['num_outputs']))
 
@@ -573,23 +576,7 @@ class Denoiser(object):
                 r_spec_in = {c: data[:, :, -w//2-ks:, :] for c, data in spec_in.items()}
 
                 if use_trt:
-                    graph = tf.Graph()
-                    with graph.as_default():
-                        with tf.gfile.GFile(diff_frozen, 'rb') as f:
-                            gdef = tf.GraphDef()
-                            gdef.ParseFromString(f.read())
-                        # create TensorRT inference graph
-                        trt_graph = trt.create_inference_graph(
-                            input_graph_def=gdef,
-                            outputs=['diffuse/out'],
-                            max_batch_size=1,
-                            max_workspace_size_bytes=2000000000,  # 2GB
-                            precision_mode='FP16')
-                        diff_out = tf.import_graph_def(
-                            trt_graph, return_elements=['diffuse/out'])
-                        l_diff_out = sess.run(diff_out, feed_dict=l_diff_in)
-                        print(l_diff_out.shape)
-                        print('--- end trt debug')
+                    # see separate file (temp)
                 else:
                     if self.diff_kpcn is None:
                         # define networks
@@ -678,6 +665,10 @@ class Denoiser(object):
                     gt_path = '%s-%sspp.exr' % (match.group(1), str(gt_spp).zfill(5))
                     gt_buffers = du.read_exr(gt_path, fp16=self.fp16)
                     gt_buffers = du.stack_channels(gt_buffers)
+
+                    # (temp) for smaller images
+                    # du.crop_buffers(gt_buffers, 110, -110, 160, -560)
+
                     _gt_out = np.concatenate(
                         [gt_buffers['R'], gt_buffers['G'], gt_buffers['B']], axis=-1)
                     gt_out = du.clip_and_gamma_correct(_gt_out)

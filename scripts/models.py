@@ -296,7 +296,7 @@ class MultiscaleModel(DKPCN):
         # should pass these in from outside
         coarse_wt = 0.9
         alpha_wt = 0.01
-        GOOGLE_SCALE_COMPOSITOR = True
+        GOOGLE_SCALE_COMPOSITOR = False
         self.bicubic = GOOGLE_SCALE_COMPOSITOR
 
         summaries = []
@@ -343,14 +343,13 @@ class MultiscaleModel(DKPCN):
         self.denoised4 = tf.stop_gradient(self.kpcn4.out)
 
         if GOOGLE_SCALE_COMPOSITOR:
-            self.out2 = self._google_scale_compositor(self.denoised2, self.denoised4)
-            self.out = self._google_scale_compositor(self.denoised1, self.out2)
-            self.alpha2 = self.alpha2_mean = self.alpha1 = self.alpha1_mean = None
+            self.out2, self.alpha2 = self._google_scale_compositor(self.denoised2, self.denoised4)
+            self.out,  self.alpha1 = self._google_scale_compositor(self.denoised1, self.out2)
         else:
             self.out2, self.alpha2 = self._scale_compositor(self.denoised2, self.denoised4)
-            self.out, self.alpha1 = self._scale_compositor(self.denoised1, self.out2)  # reuse vars
-            self.alpha2_mean = tf.reduce_mean(self.alpha2)
-            self.alpha1_mean = tf.reduce_mean(self.alpha1)
+            self.out,  self.alpha1 = self._scale_compositor(self.denoised1, self.out2)
+        self.alpha2_mean = tf.reduce_mean(self.alpha2)
+        self.alpha1_mean = tf.reduce_mean(self.alpha1)
 
         _id = scope or 'x'
         to_log = [
@@ -507,34 +506,34 @@ class MultiscaleModel(DKPCN):
 
     def _google_scale_compositor(self, denoised_fine, denoised_coarse):
         h, w = MultiscaleModel._get_spatial_dims(denoised_fine)
+        UD_fine = self._upsample2(self._downsample2(denoised_fine, self.bicubic))
         assert h % 2 == 0 and w % 2 == 0
 
         ks = 21  # predicted kernel size
 
         with tf.variable_scope(self.sc_scope, reuse=tf.AUTO_REUSE):
-            kernels = tf.concat((denoised_fine, self._upsample2(denoised_coarse)), axis=-1)
-            kernels = tf.layers.conv2d(
-                kernels, 100, 5, strides=1, padding='same', activation=tf.nn.relu, name='conv0')
-            kernels = self._residual_block(
-                kernels, None, None, num_outputs=100, kernel_size=5,
+            out = tf.concat((denoised_fine, self._upsample2(denoised_coarse)), axis=-1)
+            out = tf.layers.conv2d(
+                out, 100, 5, strides=1, padding='same', activation=tf.nn.relu, name='conv0')
+            out = self._residual_block(
+                out, None, None, num_outputs=100, kernel_size=5,
                 batchnorm=False, dropout=False, scope='residual0', use_names=True)
-            kernels = self._residual_block(
-                kernels, None, None, num_outputs=100, kernel_size=5,
+            out = self._residual_block(
+                out, None, None, num_outputs=100, kernel_size=5,
                 batchnorm=False, dropout=False, scope='residual1', use_names=True)
-            kernels = self._residual_block(
-                kernels, None, None, num_outputs=100, kernel_size=5,
+            out = self._residual_block(
+                out, None, None, num_outputs=100, kernel_size=5,
                 batchnorm=False, dropout=False, scope='residual2', use_names=True)
-            kernels = self._residual_block(
-                kernels, None, None, num_outputs=100, kernel_size=5,
-                batchnorm=False, dropout=False, scope='residual3', use_names=True)
             kernels = tf.layers.conv2d(
-                kernels, ks * ks, 5, strides=1, padding='same', activation=None, name='conv1')
+                out, ks * ks, 5, strides=1, padding='same', activation=None, name='conv1')
+            alpha = tf.layers.conv2d(
+                out, 1, 5, strides=1, padding='same', activation=tf.nn.sigmoid, name='conv2')
             kernels = tf.nn.softmax(kernels - tf.reduce_max(kernels, axis=-1, keepdims=True), axis=-1)
-            upsampled_blend_coarse = self._upsample2_filter(denoised_coarse, kernels, ks)
-            return tf.maximum(denoised_fine + upsampled_blend_coarse, 0.0)
+            U_coarse = self._upsample2_filter(denoised_coarse, kernels, ks)
+            blend = denoised_fine + alpha * (U_coarse - UD_fine)
+            return blend, alpha
 
     def _upsample2_filter(self, im, kernels, kernel_size):
-        _, h, w, c = im.get_shape().as_list()
         kernel_radius = kernel_size // 2
         im = tf.pad(im, [[0, 0], [kernel_radius, kernel_radius], [kernel_radius, kernel_radius], [0, 0]])
 
