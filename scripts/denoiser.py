@@ -577,6 +577,7 @@ class Denoiser(object):
 
                 if use_trt:
                     # see separate file (temp)
+                    pass
                 else:
                     if self.diff_kpcn is None:
                         # define networks
