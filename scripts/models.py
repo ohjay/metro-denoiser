@@ -33,14 +33,21 @@ class DKPCN(object):
         self.scope = scope or 'DKPCN_%d' % DKPCN.curr_index
         with tf.variable_scope(self.scope, reuse=reuse):
             with tf.variable_scope('inputs'):
-                # color buffer
-                self.color = tf.identity(tf_buffers['color'], name='color')  # (?, h, w, 3)
-                # gradients (color, surface normals, albedo, depth)
-                self.grad_x = tf.identity(tf_buffers['grad_x'], name='grad_x')  # (?, h, w, 10)
-                self.grad_y = tf.identity(tf_buffers['grad_y'], name='grad_y')  # (?, h, w, 10)
-                # rel variance
-                self.var_color = tf.identity(tf_buffers['var_color'], name='var_color')  # (?, h, w, 1)
-                self.var_features = tf.identity(tf_buffers['var_features'], name='var_features')  # (?, h, w, 3)
+                if tf_buffers is None:
+                    self.color        = tf.placeholder(tf.float32, shape=(None, buffer_h, buffer_w, 3),  name='color')
+                    self.grad_x       = tf.placeholder(tf.float32, shape=(None, buffer_h, buffer_w, 10), name='grad_x')
+                    self.grad_y       = tf.placeholder(tf.float32, shape=(None, buffer_h, buffer_w, 10), name='grad_y')
+                    self.var_color    = tf.placeholder(tf.float32, shape=(None, buffer_h, buffer_w, 1),  name='var_color')
+                    self.var_features = tf.placeholder(tf.float32, shape=(None, buffer_h, buffer_w, 3),  name='var_features')
+                else:
+                    # color buffer
+                    self.color = tf.identity(tf_buffers['color'], name='color')  # (?, h, w, 3)
+                    # gradients (color, surface normals, albedo, depth)
+                    self.grad_x = tf.identity(tf_buffers['grad_x'], name='grad_x')  # (?, h, w, 10)
+                    self.grad_y = tf.identity(tf_buffers['grad_y'], name='grad_y')  # (?, h, w, 10)
+                    # rel variance
+                    self.var_color = tf.identity(tf_buffers['var_color'], name='var_color')  # (?, h, w, 1)
+                    self.var_features = tf.identity(tf_buffers['var_features'], name='var_features')  # (?, h, w, 3)
 
             out = tf.concat((
                 self.color, self.grad_x, self.grad_y, self.var_color, self.var_features), axis=3)
@@ -99,40 +106,41 @@ class DKPCN(object):
                     self._filter(self.color, self.out_kernels), name='out')  # filtered color buffer
 
             # loss
-            gt_out = tf_buffers['gt_out']
-            if self.valid_padding:
-                gt_out = tf_center_crop(gt_out, self.valid_h, self.valid_w)
-            self.gt_out = tf.identity(gt_out, name='gt_out')  # (?, h, w, 3)
-            if asymmetric_loss:
-                loss = self._asymmetric_smape(self.color, self.out, self.gt_out, slope=2.0)
-            else:
-                loss = self._smape(self.out, self.gt_out)
-            loss = tf.verify_tensor_all_finite(loss, 'NaN or Inf in loss')
-            self.loss = tf.identity(loss, name='loss')
-            self.loss_summary = tf.summary.scalar('loss', self.loss)
+            if tf_buffers is not None:
+                gt_out = tf_buffers['gt_out']
+                if self.valid_padding:
+                    gt_out = tf_center_crop(gt_out, self.valid_h, self.valid_w)
+                self.gt_out = tf.identity(gt_out, name='gt_out')  # (?, h, w, 3)
+                if asymmetric_loss:
+                    loss = self._asymmetric_smape(self.color, self.out, self.gt_out, slope=2.0)
+                else:
+                    loss = self._smape(self.out, self.gt_out)
+                loss = tf.verify_tensor_all_finite(loss, 'NaN or Inf in loss')
+                self.loss = tf.identity(loss, name='loss')
+                self.loss_summary = tf.summary.scalar('loss', self.loss)
 
-            # optimization
-            self.global_step = tf.Variable(0, trainable=False, name='global_step')
-            self.learning_rate = tf.train.exponential_decay(learning_rate, self.global_step, 100000, 0.96)
-            if fp16:
-                # eps: https://stackoverflow.com/a/42077538
-                opt = tf.train.AdamOptimizer(self.learning_rate, epsilon=1e-4)
-            else:
-                opt = tf.train.AdamOptimizer(self.learning_rate)
-            update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
-            with tf.control_dependencies(update_ops):  # for batch norm
-                grads_and_vars = opt.compute_gradients(self.loss)  # [(grad, var) tuples]
-                grads_and_vars = filter(lambda gv: None not in gv, grads_and_vars)
-                grads, _vars = zip(*grads_and_vars)
-                self.grads = grads  # list of gradients
-                self.tvars = _vars  # list of trainable variables
-                self.gnorm = tf.global_norm(grads, name='grad_norm')
-                if clip_by_global_norm:  # empirically not helpful
-                    grads, _ = tf.clip_by_global_norm(grads, 0.5, use_norm=self.gnorm)
-                    grads_and_vars = zip(grads, _vars)
-                # clip by value
-                grads_and_vars = [(tf.clip_by_value(grad, -1.0, 1.0), var) for grad, var in grads_and_vars]
-                self.opt_op = opt.apply_gradients(grads_and_vars, global_step=self.global_step)
+                # optimization
+                self.global_step = tf.Variable(0, trainable=False, name='global_step')
+                self.learning_rate = tf.train.exponential_decay(learning_rate, self.global_step, 100000, 0.96)
+                if fp16:
+                    # eps: https://stackoverflow.com/a/42077538
+                    opt = tf.train.AdamOptimizer(self.learning_rate, epsilon=1e-4)
+                else:
+                    opt = tf.train.AdamOptimizer(self.learning_rate)
+                update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
+                with tf.control_dependencies(update_ops):  # for batch norm
+                    grads_and_vars = opt.compute_gradients(self.loss)  # [(grad, var) tuples]
+                    grads_and_vars = filter(lambda gv: None not in gv, grads_and_vars)
+                    grads, _vars = zip(*grads_and_vars)
+                    self.grads = grads  # list of gradients
+                    self.tvars = _vars  # list of trainable variables
+                    self.gnorm = tf.global_norm(grads, name='grad_norm')
+                    if clip_by_global_norm:  # empirically not helpful
+                        grads, _ = tf.clip_by_global_norm(grads, 0.5, use_norm=self.gnorm)
+                        grads_and_vars = zip(grads, _vars)
+                    # clip by value
+                    grads_and_vars = [(tf.clip_by_value(grad, -1.0, 1.0), var) for grad, var in grads_and_vars]
+                    self.opt_op = opt.apply_gradients(grads_and_vars, global_step=self.global_step)
 
             # logging
             graph = sess.graph if sess is not None else None
