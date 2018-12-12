@@ -1,0 +1,13 @@
+*.bst
+*.cls
+*.cut
+*.aux
+*.bbl
+*.blg
+*.log
+*.out
+*.synctex.gz
+*.tex
+*.eps
+*.bib
+*.synctex.gz(busy)
