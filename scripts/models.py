@@ -20,11 +20,12 @@ class DKPCN(object):
     def __init__(self, tf_buffers, buffer_h, buffer_w, layers_config,
                  is_training, learning_rate, summary_dir, scope=None,
                  save_best=False, fp16=False, clip_by_global_norm=False,
-                 valid_padding=False, asymmetric_loss=True, sess=None, reuse=False):
+                 valid_padding=False, asymmetric_loss=True, sess=None, reuse=False, indiv_spp=-1):
 
         self.buffer_h = buffer_h
         self.buffer_w = buffer_w
         self.valid_padding = valid_padding and is_training
+        self.indiv_spp = indiv_spp
 
         summaries = []  # to merge
 
@@ -33,28 +34,52 @@ class DKPCN(object):
         self.scope = scope or 'DKPCN_%d' % DKPCN.curr_index
         with tf.variable_scope(self.scope, reuse=reuse):
             with tf.variable_scope('inputs'):
-                if tf_buffers is None:
-                    self.color        = tf.placeholder(tf.float32, shape=(None, buffer_h, buffer_w, 3),  name='color')
-                    self.grad_x       = tf.placeholder(tf.float32, shape=(None, buffer_h, buffer_w, 10), name='grad_x')
-                    self.grad_y       = tf.placeholder(tf.float32, shape=(None, buffer_h, buffer_w, 10), name='grad_y')
-                    self.var_color    = tf.placeholder(tf.float32, shape=(None, buffer_h, buffer_w, 1),  name='var_color')
-                    self.var_features = tf.placeholder(tf.float32, shape=(None, buffer_h, buffer_w, 3),  name='var_features')
+                if self.indiv_spp > 0:
+                    if tf_buffers is None:
+                        self.color        = tf.placeholder(tf.float32, shape=(1, indiv_spp, buffer_h, buffer_w, 3),  name='color')
+                        self.grad_x       = tf.placeholder(tf.float32, shape=(1, indiv_spp, buffer_h, buffer_w, 10), name='grad_x')
+                        self.grad_y       = tf.placeholder(tf.float32, shape=(1, indiv_spp, buffer_h, buffer_w, 10), name='grad_y')
+                        self.var_color    = tf.placeholder(tf.float32, shape=(1, indiv_spp, buffer_h, buffer_w, 1),  name='var_color')
+                        self.var_features = tf.placeholder(tf.float32, shape=(1, indiv_spp, buffer_h, buffer_w, 3),  name='var_features')
+                    else:
+                        # color buffer
+                        self.color = tf.identity(tf_buffers['color'], name='color')  # (?, spp, h, w, 3)
+                        # gradients (color, surface normals, albedo, depth)
+                        self.grad_x = tf.identity(tf_buffers['grad_x'], name='grad_x')  # (?, spp, h, w, 10)
+                        self.grad_y = tf.identity(tf_buffers['grad_y'], name='grad_y')  # (?, spp, h, w, 10)
+                        # rel variance
+                        self.var_color = tf.identity(tf_buffers['var_color'], name='var_color')  # (?, spp, h, w, 1)
+                        self.var_features = tf.identity(tf_buffers['var_features'], name='var_features')  # (?, spp, h, w, 3)
                 else:
-                    # color buffer
-                    self.color = tf.identity(tf_buffers['color'], name='color')  # (?, h, w, 3)
-                    # gradients (color, surface normals, albedo, depth)
-                    self.grad_x = tf.identity(tf_buffers['grad_x'], name='grad_x')  # (?, h, w, 10)
-                    self.grad_y = tf.identity(tf_buffers['grad_y'], name='grad_y')  # (?, h, w, 10)
-                    # rel variance
-                    self.var_color = tf.identity(tf_buffers['var_color'], name='var_color')  # (?, h, w, 1)
-                    self.var_features = tf.identity(tf_buffers['var_features'], name='var_features')  # (?, h, w, 3)
+                    if tf_buffers is None:
+                        self.color = tf.placeholder(tf.float32, shape=(None, buffer_h, buffer_w, 3), name='color')
+                        self.grad_x = tf.placeholder(tf.float32, shape=(None, buffer_h, buffer_w, 10), name='grad_x')
+                        self.grad_y = tf.placeholder(tf.float32, shape=(None, buffer_h, buffer_w, 10), name='grad_y')
+                        self.var_color = tf.placeholder(tf.float32, shape=(None, buffer_h, buffer_w, 1), name='var_color')
+                        self.var_features = tf.placeholder(tf.float32, shape=(None, buffer_h, buffer_w, 3), name='var_features')
+                    else:
+                        # color buffer
+                        self.color = tf.identity(tf_buffers['color'], name='color')  # (?, h, w, 3)
+                        # gradients (color, surface normals, albedo, depth)
+                        self.grad_x = tf.identity(tf_buffers['grad_x'], name='grad_x')  # (?, h, w, 10)
+                        self.grad_y = tf.identity(tf_buffers['grad_y'], name='grad_y')  # (?, h, w, 10)
+                        # rel variance
+                        self.var_color = tf.identity(tf_buffers['var_color'], name='var_color')  # (?, h, w, 1)
+                        self.var_features = tf.identity(tf_buffers['var_features'], name='var_features')  # (?, h, w, 3)
 
             out = tf.concat((
-                self.color, self.grad_x, self.grad_y, self.var_color, self.var_features), axis=3)
+                self.color, self.grad_x, self.grad_y, self.var_color, self.var_features), axis=-1)
             out = tf_nan_to_num(out)
 
             self.is_training = tf.placeholder(tf.bool, name='is_training')
             self.dropout_keep_prob = tf.placeholder_with_default(1.0, shape=(), name='dropout_keep_prob')
+
+            if self.indiv_spp > 0:
+                self.convnd = tf.layers.conv3d
+                self.convnd_name = 'conv3d'
+            else:
+                self.convnd = tf.layers.conv2d
+                self.convnd_name = 'conv2d'
 
             i = 0
             for layer in layers_config:
@@ -70,12 +95,12 @@ class DKPCN(object):
                     with tf.variable_scope('layer%d' % (i + j)):
                         if layer['type'] == 'conv2d':
                             padding = 'valid' if self.valid_padding else 'same'
-                            out = tf.layers.conv2d(
+                            out = self.convnd(
                                 out, layer['num_outputs'], layer['kernel_size'],
                                 strides=layer['stride'], padding=padding, activation=activation,
-                                kernel_initializer=kernel_init, name='conv2d')
+                                kernel_initializer=kernel_init, name=self.convnd_name)
                             kernel = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES,
-                                '%s/%s/conv2d/kernel' % (self.scope, 'layer%d' % (i + j)))[0]
+                                '%s/%s/%s/kernel' % (self.scope, 'layer%d' % (i + j), self.convnd_name))[0]
                             with tf.name_scope('summaries/layer%d' % (i + j)):
                                 summaries.append(tf.summary.histogram('conv_kernel_histogram', kernel))
                         elif layer['type'] == 'residual_block':
@@ -90,20 +115,36 @@ class DKPCN(object):
                             raise ValueError('unsupported DKPCN layer type')
                 i += chain
 
-            if layer['num_outputs'] == 3:
-                # DPCN
-                self.kernel_size = None
-                self.out_kernels = None
-                _, self.valid_h, self.valid_w, _ = out.get_shape().as_list()
-                self.out = tf.identity(out, name='out')
-            else:
+            if self.indiv_spp > 0:
+                out_flow = tf.layers.conv3d(
+                    out, 2, 1, strides=1, padding='same', activation=None,
+                    kernel_initializer=tf.contrib.layers.xavier_initializer(seed=23), name='out_flow')
+                out = tf.layers.conv3d(
+                    out, 441, (1, 1, 1), strides=1, padding='same', activation=None,
+                    kernel_initializer=tf.contrib.layers.xavier_initializer(seed=23))
+
                 # KPCN
-                self.kernel_size = int(sqrt(layer['num_outputs']))
-                out_max =  tf.reduce_max(out, axis=-1, keepdims=True)
+                self.kernel_size = 21
+                out_max = tf.reduce_max(out, axis=-1, keepdims=True)
                 self.out_kernels = tf.nn.softmax(out - out_max, axis=-1)
-                _, self.valid_h, self.valid_w, _ = self.out_kernels.get_shape().as_list()
+                _, _, self.valid_h, self.valid_w, _ = self.out_kernels.get_shape().as_list()
                 self.out = tf.identity(
-                    self._filter(self.color, self.out_kernels), name='out')  # filtered color buffer
+                    self._filter(self.color, self.out_kernels, out_flow), name='out')  # filtered color buffer
+            else:
+                if layer['num_outputs'] == 3:
+                    # DPCN
+                    self.kernel_size = None
+                    self.out_kernels = None
+                    _, self.valid_h, self.valid_w, _ = out.get_shape().as_list()
+                    self.out = tf.identity(out, name='out')
+                else:
+                    # KPCN
+                    self.kernel_size = int(sqrt(layer['num_outputs']))
+                    out_max = tf.reduce_max(out, axis=-1, keepdims=True)
+                    self.out_kernels = tf.nn.softmax(out - out_max, axis=-1)
+                    _, self.valid_h, self.valid_w, _ = self.out_kernels.get_shape().as_list()
+                    self.out = tf.identity(
+                        self._filter(self.color, self.out_kernels), name='out')  # filtered color buffer
 
             # loss
             if tf_buffers is not None:
@@ -148,44 +189,84 @@ class DKPCN(object):
                 get_run_dir(os.path.join(summary_dir, 'train')), graph)
             self.validation_writer = tf.summary.FileWriter(
                 get_run_dir(os.path.join(summary_dir, 'validation')))
-            mtk = 1 if save_best else 5
+            mtk = 1 if save_best else 2
             self.saver = tf.train.Saver(
                 tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope=self.scope), max_to_keep=mtk)
             self.merged_summaries = tf.summary.merge(summaries)
 
-    def _filter(self, color, kernels):
+    def _filter(self, color, kernels, flow=None):
 
-        # `color`   : (?, h, w, 3)
-        # `kernels` : (?, h, w, kernel_size * kernel_size)
+        if self.indiv_spp > 0:
+            _, _, im_h, im_w, _ = color.get_shape().as_list()  # all locns
 
-        _, im_h, im_w, _ = color.get_shape().as_list()    # all locns
-        # (self.valid_h, self.valid_w): locations we have kernels for
+            if flow is None:
+                # "no warp" option
+                all_warped = [color[:, i, :, :, :] for i in range(self.indiv_spp)]
+            else:
+                all_warped = [tf.contrib.image.dense_image_warp(
+                    color[:, i, :, :, :], flow[:, i, :, :, :]) for i in range(self.indiv_spp)]
 
-        kernel_radius = self.kernel_size // 2
-        y_extent = self.valid_h + kernel_radius * 2
-        x_extent = self.valid_w + kernel_radius * 2  # add an extra kernel_radius on each side
-        if y_extent > im_h:
-            # zero-pad color buffer
-            pad_y = int((y_extent - im_h) / 2)
-            pad_x = int((x_extent - im_w) / 2)
-            color = tf.pad(color, [[0, 0], [pad_y, pad_y], [pad_x, pad_x], [0, 0]])
+            kernel_radius = self.kernel_size // 2
+            y_extent = self.valid_h + kernel_radius * 2
+            x_extent = self.valid_w + kernel_radius * 2  # add an extra kernel_radius on each side
+            for i in range(self.indiv_spp):
+                if y_extent > im_h:
+                    # zero-pad color buffer
+                    pad_y = int((y_extent - im_h) / 2)
+                    pad_x = int((x_extent - im_w) / 2)
+                    all_warped[i] = tf.pad(all_warped[i], [[0, 0], [pad_y, pad_y], [pad_x, pad_x], [0, 0]])
+                else:
+                    all_warped[i] = tf_center_crop(all_warped[i], y_extent, x_extent)
+
+            # filter channels separately
+            all_filtered = []
+            for i in range(self.indiv_spp):
+                filtered_channels = []
+                for c in range(3):
+                    color_channel = all_warped[i][:, :, :, c]
+                    color_channel = tf.expand_dims(color_channel, -1)
+                    color_channel = tf.extract_image_patches(
+                        color_channel, ksizes=[1, self.kernel_size, self.kernel_size, 1],
+                        strides=[1, 1, 1, 1], rates=[1, 1, 1, 1], padding='VALID')  # (?, h, w, kernel_size * kernel_size)
+
+                    # apply per-pixel kernels
+                    filtered_channels.append(
+                        tf.reduce_sum(color_channel * kernels[:, i, :, :, :], axis=-1))
+                all_filtered.append(tf.stack(filtered_channels, axis=3))  # each [?, h, w, 3]
+
+            return tf.add_n(all_filtered) / float(self.indiv_spp)
         else:
-            color = tf_center_crop(color, y_extent, x_extent)
+            # `color`   : (?, h, w, 3)
+            # `kernels` : (?, h, w, kernel_size * kernel_size)
 
-        # filter channels separately
-        filtered_channels = []
-        for c in range(3):
-            color_channel = color[:, :, :, c]
-            color_channel = tf.expand_dims(color_channel, -1)
-            color_channel = tf.extract_image_patches(
-                color_channel, ksizes=[1, self.kernel_size, self.kernel_size, 1],
-                strides=[1, 1, 1, 1], rates=[1, 1, 1, 1], padding='VALID')  # (?, h, w, kernel_size * kernel_size)
+            _, im_h, im_w, _ = color.get_shape().as_list()  # all locns
+            # (self.valid_h, self.valid_w): locations we have kernels for
 
-            # apply per-pixel kernels
-            filtered_channels.append(
-                tf.reduce_sum(color_channel * kernels, axis=-1))
+            kernel_radius = self.kernel_size // 2
+            y_extent = self.valid_h + kernel_radius * 2
+            x_extent = self.valid_w + kernel_radius * 2  # add an extra kernel_radius on each side
+            if y_extent > im_h:
+                # zero-pad color buffer
+                pad_y = int((y_extent - im_h) / 2)
+                pad_x = int((x_extent - im_w) / 2)
+                color = tf.pad(color, [[0, 0], [pad_y, pad_y], [pad_x, pad_x], [0, 0]])
+            else:
+                color = tf_center_crop(color, y_extent, x_extent)
 
-        return tf.stack(filtered_channels, axis=3)  # (?, h, w, 3)
+            # filter channels separately
+            filtered_channels = []
+            for c in range(3):
+                color_channel = color[:, :, :, c]
+                color_channel = tf.expand_dims(color_channel, -1)
+                color_channel = tf.extract_image_patches(
+                    color_channel, ksizes=[1, self.kernel_size, self.kernel_size, 1],
+                    strides=[1, 1, 1, 1], rates=[1, 1, 1, 1], padding='VALID')  # (?, h, w, kernel_size * kernel_size)
+
+                # apply per-pixel kernels
+                filtered_channels.append(
+                    tf.reduce_sum(color_channel * kernels, axis=-1))
+
+            return tf.stack(filtered_channels, axis=3)  # (?, h, w, 3)
 
     @staticmethod
     def _l1_loss(out, gt_out):
@@ -207,15 +288,14 @@ class DKPCN(object):
         """Elementwise Heaviside step function."""
         return tf.maximum(tf.sign(x), 0.0)
 
-    @staticmethod
-    def _residual_block(_in, dropout_keep_prob, is_training,
+    def _residual_block(self, _in, dropout_keep_prob, is_training,
                         kernel_init=None, num_outputs=100, kernel_size=3,
                         batchnorm=True, dropout=True, scope=None, use_names=False):
         with tf.variable_scope(scope or 'residual_block'):
             out = _in
             for k in range(2):
                 conv_name = 'conv%d' % k if use_names else None
-                out = tf.layers.conv2d(
+                out = self.convnd(
                     out, filters=num_outputs, kernel_size=kernel_size, strides=1,
                     padding='same', activation=None, kernel_initializer=kernel_init, name=conv_name)
                 if batchnorm:

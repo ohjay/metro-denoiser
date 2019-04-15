@@ -4,3 +4,4 @@ summaries/
 out/
 diff_error.pickle
 spec_error.pickle
+.idea/

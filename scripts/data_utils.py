@@ -175,7 +175,7 @@ def _bytes_feature(value):
 
 def write_tfrecords(tfrecord_filepath, input_exr_files, gt_exr_files, patches_per_im,
                     patch_size, fp16, shuffle=False, debug_dir='', save_debug_ims_every=1,
-                    color_var_weight=1.0, normal_var_weight=1.0, file_example_limit=1e5, error_maps=None):
+                    color_var_weight=1.0, normal_var_weight=1.0, file_example_limit=1e5, error_maps=None, indiv_spp=-1):
     """Export PATCHES_PER_IM examples for each EXR file.
     Accepts two lists of EXR filepaths with corresponding orderings.
 
@@ -199,74 +199,137 @@ def write_tfrecords(tfrecord_filepath, input_exr_files, gt_exr_files, patches_pe
         del example_buffer[:num_to_write]
         return file_idx + 1  # return next file index
 
-    i = 0
-    start_time = time.time()
-    for input_filepath, gt_filepath in zip(input_exr_files, gt_exr_files):
-        # for filename str printing
-        input_dirname = os.path.dirname(input_filepath)
-        input_basename = os.path.basename(input_filepath)
-        input_id = os.path.join(os.path.basename(input_dirname), input_basename)
+    if indiv_spp > 0:
+        i = 0
+        start_time = time.time()
+        for input_filepaths, gt_filepath in zip(input_exr_files, gt_exr_files):
+            input_buffers = []
+            for input_filepath in input_filepaths:
+                input_buffers.append(stack_channels(read_exr(input_filepath, fp16=fp16)))
 
-        sampling_pdf = None
-        if error_maps is not None:
-            # use error map for sampling
-            sampling_pdf = generate_sampling_map(error_maps[input_filepath], patch_size)
+            gt_buffers = read_exr(gt_filepath, fp16=fp16)
+            gt_buffers = stack_channels(gt_buffers)
 
-        input_buffers = read_exr(input_filepath, fp16=fp16)
-        input_buffers = stack_channels(input_buffers)
-        try:
-            _input_id  = input_basename[:input_basename.rfind('.')]
-            _debug_dir = debug_dir if i % save_debug_ims_every == 0 else ''
+            print('[o] Sampling patches...')
+            # Sample based on ground truth buffers
             patch_indices = sample_patches(
-                input_buffers, patches_per_im, patch_size, patch_size, _debug_dir, _input_id,
-                color_var_weight=color_var_weight, normal_var_weight=normal_var_weight, pdf=sampling_pdf)
-        except ValueError as e:
-            print('[-] Invalid value during %s sampling. (%s)' % (input_id, str(e)))
-            continue
+                gt_buffers, patches_per_im, patch_size, patch_size, '', '',
+                color_var_weight=color_var_weight, normal_var_weight=normal_var_weight, pdf=None)
 
-        gt_buffers = read_exr(gt_filepath, fp16=fp16)
-        gt_buffers = stack_channels(gt_buffers)
+            r = patch_size // 2
+            for y, x in patch_indices:
+                feature_names = [
+                    'diffuse',
+                    'diffuseVariance',
+                    'specular',
+                    'specularVariance',
+                    'albedo',
+                    'albedoVariance',
+                    'normal',
+                    'normalVariance',
+                    'depth',
+                    'depthVariance',
+                ]
+                feature = {}
+                for fname in feature_names:
+                    feature[fname] = []
+                    for ibuffer in input_buffers:
+                        feature[fname].append(ibuffer[fname][y-r:y+r+1, x-r:x+r+1, :])
+                    feature[fname] = np.array(feature[fname])  # all will be (depth, ph, pw, 3)
 
-        # One example per patch
-        r = patch_size // 2
-        for y, x in patch_indices:
-            feature = {
-                'diffuse':          input_buffers['diffuse'][y-r:y+r+1, x-r:x+r+1, :],
-                'diffuseVariance':  input_buffers['diffuseVariance'][y-r:y+r+1, x-r:x+r+1, :],
-                'specular':         input_buffers['specular'][y-r:y+r+1, x-r:x+r+1, :],
-                'specularVariance': input_buffers['specularVariance'][y-r:y+r+1, x-r:x+r+1, :],
-                'albedo':           input_buffers['albedo'][y-r:y+r+1, x-r:x+r+1, :],
-                'albedoVariance':   input_buffers['albedoVariance'][y-r:y+r+1, x-r:x+r+1, :],
-                'normal':           input_buffers['normal'][y-r:y+r+1, x-r:x+r+1, :],
-                'normalVariance':   input_buffers['normalVariance'][y-r:y+r+1, x-r:x+r+1, :],
-                'depth':            input_buffers['depth'][y-r:y+r+1, x-r:x+r+1, :],
-                'depthVariance':    input_buffers['depthVariance'][y-r:y+r+1, x-r:x+r+1, :],
-                'gt_diffuse':       gt_buffers['diffuse'][y-r:y+r+1, x-r:x+r+1, :],
-                'gt_specular':      gt_buffers['specular'][y-r:y+r+1, x-r:x+r+1, :],
-                'gt_albedo':        gt_buffers['albedo'][y-r:y+r+1, x-r:x+r+1, :],
-            }
-            for c, data in feature.items():
-                if fp16:
-                    feature[c] = _bytes_feature(data.tobytes())
-                else:
-                    feature[c] = _bytes_feature(tf.compat.as_bytes(data.tostring()))
-            example = tf.train.Example(features=tf.train.Features(feature=feature))
-            example_buffer.append(example)
-        print('[o] Collected %d examples for %s (%d/%d).'
-            % (len(patch_indices), input_id, i + 1, len(input_exr_files)))
-        if (i + 1) % 10 == 0:
-            print('(time elapsed: %s)' % format_seconds(time.time() - start_time))
+                feature['gt_diffuse'] = gt_buffers['diffuse'][y-r:y+r+1, x-r:x+r+1, :]
+                feature['gt_specular'] = gt_buffers['specular'][y-r:y+r+1, x-r:x+r+1, :]
+                feature['gt_albedo'] = gt_buffers['albedo'][y-r:y+r+1, x-r:x+r+1, :]
 
-        while len(example_buffer) >= file_example_limit:
-            file_idx = write_example_buffer()
+                for c, data in feature.items():
+                    if fp16:
+                        feature[c] = _bytes_feature(data.tobytes())
+                    else:
+                        feature[c] = _bytes_feature(tf.compat.as_bytes(data.tostring()))
+                example = tf.train.Example(features=tf.train.Features(feature=feature))
+                example_buffer.append(example)
+            input_basename = os.path.basename(os.path.dirname(input_filepaths[0]))
+            input_dirname = os.path.basename(os.path.dirname(os.path.dirname(input_filepaths[0])))
+            input_id = os.path.join(os.path.basename(input_dirname), input_basename)
+            print('[o] Collected %d examples for %s (%d/%d).'
+                  % (len(patch_indices), input_id, i + 1, len(input_exr_files)))
+            if (i + 1) % 10 == 0:
+                print('(time elapsed: %s)' % format_seconds(time.time() - start_time))
 
-        i += 1
+            while len(example_buffer) >= file_example_limit:
+                file_idx = write_example_buffer()
+
+            i += 1
+    else:
+        i = 0
+        start_time = time.time()
+        for input_filepath, gt_filepath in zip(input_exr_files, gt_exr_files):
+            # for filename str printing
+            input_dirname = os.path.dirname(input_filepath)
+            input_basename = os.path.basename(input_filepath)
+            input_id = os.path.join(os.path.basename(input_dirname), input_basename)
+
+            sampling_pdf = None
+            if error_maps is not None:
+                # use error map for sampling
+                sampling_pdf = generate_sampling_map(error_maps[input_filepath], patch_size)
+
+            input_buffers = read_exr(input_filepath, fp16=fp16)
+            input_buffers = stack_channels(input_buffers)
+            try:
+                _input_id  = input_basename[:input_basename.rfind('.')]
+                _debug_dir = debug_dir if i % save_debug_ims_every == 0 else ''
+                # TODO: sample based on ground truth buffers?
+                patch_indices = sample_patches(
+                    input_buffers, patches_per_im, patch_size, patch_size, _debug_dir, _input_id,
+                    color_var_weight=color_var_weight, normal_var_weight=normal_var_weight, pdf=sampling_pdf)
+            except ValueError as e:
+                print('[-] Invalid value during %s sampling. (%s)' % (input_id, str(e)))
+                continue
+
+            gt_buffers = read_exr(gt_filepath, fp16=fp16)
+            gt_buffers = stack_channels(gt_buffers)
+
+            # One example per patch
+            r = patch_size // 2
+            for y, x in patch_indices:
+                feature = {
+                    'diffuse':          input_buffers['diffuse'][y-r:y+r+1, x-r:x+r+1, :],
+                    'diffuseVariance':  input_buffers['diffuseVariance'][y-r:y+r+1, x-r:x+r+1, :],
+                    'specular':         input_buffers['specular'][y-r:y+r+1, x-r:x+r+1, :],
+                    'specularVariance': input_buffers['specularVariance'][y-r:y+r+1, x-r:x+r+1, :],
+                    'albedo':           input_buffers['albedo'][y-r:y+r+1, x-r:x+r+1, :],
+                    'albedoVariance':   input_buffers['albedoVariance'][y-r:y+r+1, x-r:x+r+1, :],
+                    'normal':           input_buffers['normal'][y-r:y+r+1, x-r:x+r+1, :],
+                    'normalVariance':   input_buffers['normalVariance'][y-r:y+r+1, x-r:x+r+1, :],
+                    'depth':            input_buffers['depth'][y-r:y+r+1, x-r:x+r+1, :],
+                    'depthVariance':    input_buffers['depthVariance'][y-r:y+r+1, x-r:x+r+1, :],
+                    'gt_diffuse':       gt_buffers['diffuse'][y-r:y+r+1, x-r:x+r+1, :],
+                    'gt_specular':      gt_buffers['specular'][y-r:y+r+1, x-r:x+r+1, :],
+                    'gt_albedo':        gt_buffers['albedo'][y-r:y+r+1, x-r:x+r+1, :],
+                }
+                for c, data in feature.items():
+                    if fp16:
+                        feature[c] = _bytes_feature(data.tobytes())
+                    else:
+                        feature[c] = _bytes_feature(tf.compat.as_bytes(data.tostring()))
+                example = tf.train.Example(features=tf.train.Features(feature=feature))
+                example_buffer.append(example)
+            print('[o] Collected %d examples for %s (%d/%d).'
+                % (len(patch_indices), input_id, i + 1, len(input_exr_files)))
+            if (i + 1) % 10 == 0:
+                print('(time elapsed: %s)' % format_seconds(time.time() - start_time))
+
+            while len(example_buffer) >= file_example_limit:
+                file_idx = write_example_buffer()
+
+            i += 1
 
     # (final) write
     while len(example_buffer) > 0:
         write_example_buffer()
 
-def make_decode(mode, tf_dtype, buffer_h, buffer_w, eps, clip_ims):
+def make_decode(mode, tf_dtype, buffer_h, buffer_w, eps, clip_ims, indiv_spp=-1):
     """Mode options: 'diff', 'spec', 'comb'."""
     diff_or_comb = mode in {'diff', 'comb'}
     spec_or_comb = mode in {'spec', 'comb'}
@@ -295,7 +358,10 @@ def make_decode(mode, tf_dtype, buffer_h, buffer_w, eps, clip_ims):
         p = {}  # "p" for "parsed"
         for name in _features.keys():
             p[name] = tf.decode_raw(features[name], tf_dtype)
-            p[name] = tf.reshape(p[name], [buffer_h, buffer_w, N_CHANNELS[name]])
+            if indiv_spp > 0 and not name.startswith('gt'):
+                p[name] = tf.reshape(p[name], [indiv_spp, buffer_h, buffer_w, N_CHANNELS[name]])
+            else:
+                p[name] = tf.reshape(p[name], [buffer_h, buffer_w, N_CHANNELS[name]])
 
         # clipping
         if clip_ims:
@@ -588,13 +654,34 @@ def compute_buffer_gradients(buffers):
     }
     return grad_y, grad_x
 
-def make_network_inputs(buffers, clip_ims, eps):
+def make_network_inputs(buffers, clip_ims, eps, indiv_spp=-1):
     """Takes buffers (for a single image, i.e. shapes are HWC)
     and constructs both diffuse and specular KPCN inputs.
 
     This function does not split the image into patches.
     If such behavior is desired, it can be applied after this function.
     """
+    if indiv_spp > 0:
+        feature_names = [
+            'diffuse',
+            'diffuseVariance',
+            'specular',
+            'specularVariance',
+            'albedo',
+            'albedoVariance',
+            'normal',
+            'normalVariance',
+            'depth',
+            'depthVariance',
+        ]
+        feature = {}
+        for fname in feature_names:
+            feature[fname] = []
+            for ibuffer in buffers:
+                feature[fname].append(ibuffer[fname])
+            feature[fname] = np.array(feature[fname])  # all will be (depth, h, w, 3)
+        buffers = feature
+
     # clip
     if clip_ims:
         buffers['diffuse']  = clip_and_gamma_correct(buffers['diffuse'])
@@ -611,7 +698,11 @@ def make_network_inputs(buffers, clip_ims, eps):
         to_rel_variance(buffers['depthVariance'],  buffers['depth']),
     ], axis=-1)
 
-    grad_y, grad_x = compute_buffer_gradients(buffers)
+    if indiv_spp > 0:
+        grad_y, grad_x = compute_buffer_gradients(
+            [np.mean(ibuffer, axis=0) for ibuffer in buffers])
+    else:
+        grad_y, grad_x = compute_buffer_gradients(buffers)
     grad_y_features = np.concatenate(
         [grad_y['normal'], grad_y['albedo'], grad_y['depth']], axis=-1)
     grad_x_features = np.concatenate(
