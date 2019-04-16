@@ -205,7 +205,10 @@ def write_tfrecords(tfrecord_filepath, input_exr_files, gt_exr_files, patches_pe
         start_time = time.time()
         for input_filepaths, gt_filepath in zip(input_exr_files, gt_exr_files):
             input_buffers = []
-            for input_filepath in input_filepaths:
+            for k, input_filepath in enumerate(input_filepaths):
+                if k % 10 == 0:
+                    _if_dir = os.path.basename(os.path.dirname(input_filepath))
+                    print('[o] Reading `%s`...' % os.path.join(_if_dir, os.path.basename(input_filepath)))
                 input_buffers.append(stack_channels(read_exr(input_filepath, fp16=fp16)))
 
             gt_buffers = read_exr(gt_filepath, fp16=fp16)
@@ -615,7 +618,7 @@ def preprocess_depth(buffers):
         buffers['depth'] /= _max
         buffers['depthVariance'] /= _max ** 2
 
-def compute_buffer_gradients(buffers):
+def compute_buffer_gradients(buffers, indiv_spp=-1):
     """
     Return horizontal and vertical gradients for
     diffuse buffer (3 channels), specular buffer (3 channels),
@@ -633,11 +636,19 @@ def compute_buffer_gradients(buffers):
 
         return grad_y, grad_x
 
-    diffuse_grad_y,  diffuse_grad_x  = _image_gradients(buffers['diffuse'])
-    specular_grad_y, specular_grad_x = _image_gradients(buffers['specular'])
-    normal_grad_y,   normal_grad_x   = _image_gradients(buffers['normal'])
-    albedo_grad_y,   albedo_grad_x   = _image_gradients(buffers['albedo'])
-    depth_grad_y,    depth_grad_x    = _image_gradients(buffers['depth'])
+    if indiv_spp > 0:
+        def stacked_gradients(_buffer):
+            grad_y_tensors, grad_x_tensors = zip(
+                *[_image_gradients(_buffer[i]) for i in range(indiv_spp)])
+            return np.stack(grad_y_tensors, axis=0), np.stack(grad_x_tensors, axis=0)
+        gradient_function = stacked_gradients
+    else:
+        gradient_function = _image_gradients
+    diffuse_grad_y,  diffuse_grad_x  = gradient_function(buffers['diffuse'])
+    specular_grad_y, specular_grad_x = gradient_function(buffers['specular'])
+    normal_grad_y,   normal_grad_x   = gradient_function(buffers['normal'])
+    albedo_grad_y,   albedo_grad_x   = gradient_function(buffers['albedo'])
+    depth_grad_y,    depth_grad_x    = gradient_function(buffers['depth'])
 
     grad_y = {
         'diffuse': diffuse_grad_y,
@@ -680,7 +691,7 @@ def make_network_inputs(buffers, clip_ims, eps, indiv_spp=-1):
             feature[fname] = []
             for ibuffer in buffers:
                 feature[fname].append(ibuffer[fname])
-            feature[fname] = np.array(feature[fname])  # all will be (depth, h, w, 3)
+            feature[fname] = np.array(feature[fname])  # all will be (spp, h, w, 3 or 1)
         buffers = feature
 
     # clip
@@ -699,11 +710,7 @@ def make_network_inputs(buffers, clip_ims, eps, indiv_spp=-1):
         to_rel_variance(buffers['depthVariance'],  buffers['depth']),
     ], axis=-1)
 
-    if indiv_spp > 0:
-        grad_y, grad_x = compute_buffer_gradients(
-            [np.mean(ibuffer, axis=0) for ibuffer in buffers])
-    else:
-        grad_y, grad_x = compute_buffer_gradients(buffers)
+    grad_y, grad_x = compute_buffer_gradients(buffers, indiv_spp=indiv_spp)
     grad_y_features = np.concatenate(
         [grad_y['normal'], grad_y['albedo'], grad_y['depth']], axis=-1)
     grad_x_features = np.concatenate(

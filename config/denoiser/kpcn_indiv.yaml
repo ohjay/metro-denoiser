@@ -1,0 +1,153 @@
+op: sample_data
+# train, sample_data, visualize_data, denoise, compute_error
+
+data:
+  data_dir: /media/owen/302371f7-852e-4f78-94e6-4d3ffebda36e/deep_learning_denoising/renderings
+  indiv_spp_data_dir: /media/owen/ba9d40b5-89de-4832-bad4-156b118e4a66/deep_learning_denoising_indiv
+  tfrecord_dir:
+    - /media/owen/302371f7-852e-4f78-94e6-4d3ffebda36e/renderings_tfrecords_indiv
+  scenes:
+    - bathroom2
+    - car2
+    - classroom
+    - house
+    - room2
+    - spaceship
+    - staircase
+    - room3
+  splits:
+    train:      0.95
+    validation: 0.05
+    test:       0.00
+  in_spp: 32
+  gt_spp: 8192
+  is_indiv_samples: True
+  parse_start: 0
+  parse_step: 1
+  parse_shuffle: True
+  file_example_limit: 30
+  patch_size: 65  # 125
+  patches_per_im: 50
+  save_debug_ims: True
+  save_debug_ims_every: 50
+  color_var_weight: 1.0
+  normal_var_weight: 1.0
+  shuffle_buffer_size_limit: 100
+  shuffle_filenames: True
+  clip_ims: False
+  use_error_maps_for_sampling: False
+
+train_params:
+  batch_size: 2
+  learning_rate: 1e-5
+  reset_lr: True
+  max_epochs: 1e4
+  log_freq: 100
+  save_freq: 2000
+  aux_summary_write_freq: 20000
+  save_best: False  # if True, ignores `save_freq`
+  only_val: False
+  viz_freq: 1
+  block_on_viz: False
+  summary_dir: 9spp/summaries
+  checkpoint_dir: 9spp/checkpoints
+  fp16: False
+  clip_by_global_norm: False  # empirically not helpful
+  asymmetric_loss: False
+  dropout_keep_prob: 0.7
+
+kpcn:
+  diff:
+    train_include: True
+  spec:
+    train_include: True
+  valid_padding:  False  # during training only
+  multiscale:     False
+  single_network: False  # ulimit -n 9000
+
+evaluate:
+  im_path: /media/owen/302371f7-852e-4f78-94e6-4d3ffebda36e/deep_learning_denoising/renderings/bathroom2/18889126-00128spp.exr
+  out_dir:         out
+  write_error_ims: False
+  viz_kernels:     False
+  use_trt:         False
+
+# -----------------
+# KPCN architecture
+# -----------------
+# layers:
+#   - type: conv2d
+#     kernel_init: xavier
+#     num_outputs: 100
+#     kernel_size: 5
+#     stride: 1
+#     activation: relu
+#     chain: 8
+
+#   # output
+#   - type: conv2d
+#     kernel_init: xavier
+#     num_outputs: 441  # 21 * 21
+#     kernel_size: 5
+#     stride: 1
+#     activation: x
+
+# -----------------
+# KPAL architecture
+# -----------------
+# layers:
+#   - type: conv2d
+#     kernel_init: xavier
+#     num_outputs: 100
+#     kernel_size: 3
+#     stride: 1
+#     activation: relu
+
+#   - type: conv2d
+#     kernel_init: xavier
+#     num_outputs: 100
+#     kernel_size: 3
+#     stride: 1
+#     activation: relu
+
+#   - type: residual_block
+#     kernel_init: xavier
+#     num_outputs: 100
+#     kernel_size: 3
+#     dropout: True
+#     chain: 12
+
+#   - type: conv2d
+#     kernel_init: xavier
+#     num_outputs: 100
+#     kernel_size: 1
+#     stride: 1
+#     activation: relu
+
+#   # output
+#   - type: conv2d
+#     kernel_init: xavier
+#     num_outputs: 441  # 21 * 21
+#     kernel_size: 1
+#     stride: 1
+#     activation: x
+
+# ----------------------
+# indiv_spp architecture
+# ----------------------
+layers:
+  - type: conv2d
+    kernel_init: xavier
+    num_outputs: 100
+    kernel_size: 3
+    stride: 1
+    activation: relu
+
+  - type: residual_block
+    kernel_init: xavier
+    num_outputs: 100
+    kernel_size: 3
+    dropout: True
+    chain: 2
+
+# last heads are added at end

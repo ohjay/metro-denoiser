@@ -300,7 +300,11 @@ class Denoiser(object):
                     dataset_size = min(val_dataset_size_estimate, size_lim)
                 if shuffle:
                     datasets[comp] = datasets[comp].shuffle(dataset_size)
-                datasets[comp] = datasets[comp].batch(batch_size)
+                if indiv_spp > 0:
+                    datasets[comp] = datasets[comp].apply(
+                        tf.contrib.data.batch_and_drop_remainder(batch_size))  # fixed batch size
+                else:
+                    datasets[comp] = datasets[comp].batch(batch_size)
 
             # shared iterator
             iterator = tf.data.Iterator.from_structure(
@@ -315,11 +319,24 @@ class Denoiser(object):
 
                 # compute gradients
                 grad = []
-                grad_y_normal, grad_x_normal = tf.image.image_gradients(normal)
-                grad_y_albedo, grad_x_albedo = tf.image.image_gradients(albedo)
-                grad_y_depth, grad_x_depth = tf.image.image_gradients(depth)
-                for color in (diff, spec):
-                    grad_y_color, grad_x_color = tf.image.image_gradients(color)
+                if indiv_spp > 0:
+                    def stacked_gradients(batched_tensor):
+                        grad_y_tensors, grad_x_tensors = zip(
+                            *[tf.image.image_gradients(batched_tensor[:, i]) for i in range(indiv_spp)])
+                        return tf.stack(grad_y_tensors, axis=1), tf.stack(grad_x_tensors, axis=1)
+                    grad_y_diff, grad_x_diff = stacked_gradients(diff)
+                    grad_y_spec, grad_x_spec = stacked_gradients(spec)
+                    grad_y_normal, grad_x_normal = stacked_gradients(normal)
+                    grad_y_albedo, grad_x_albedo = stacked_gradients(albedo)
+                    grad_y_depth, grad_x_depth = stacked_gradients(depth)
+                else:
+                    grad_y_diff, grad_x_diff = tf.image.image_gradients(diff)
+                    grad_y_spec, grad_x_spec = tf.image.image_gradients(spec)
+                    grad_y_normal, grad_x_normal = tf.image.image_gradients(normal)
+                    grad_y_albedo, grad_x_albedo = tf.image.image_gradients(albedo)
+                    grad_y_depth, grad_x_depth = tf.image.image_gradients(depth)
+
+                for grad_y_color, grad_x_color in [(grad_y_diff, grad_x_diff), (grad_y_spec, grad_x_spec)]:
                     grad_y = tf.concat([grad_y_color, grad_y_normal, grad_y_albedo, grad_y_depth], -1)
                     grad_x = tf.concat([grad_x_color, grad_x_normal, grad_x_albedo, grad_x_depth], -1)
                     grad.append({'grad_y': grad_y, 'grad_x': grad_x})
@@ -371,10 +388,21 @@ class Denoiser(object):
                     }
 
                 # compute gradients
-                grad_y_color, grad_x_color = tf.image.image_gradients(color)
-                grad_y_normal, grad_x_normal = tf.image.image_gradients(normal)
-                grad_y_albedo, grad_x_albedo = tf.image.image_gradients(albedo)
-                grad_y_depth, grad_x_depth = tf.image.image_gradients(depth)
+                grad = []
+                if indiv_spp > 0:
+                    def stacked_gradients(batched_tensor):
+                        grad_y_tensors, grad_x_tensors = zip(
+                            *[tf.image.image_gradients(batched_tensor[:, i]) for i in range(indiv_spp)])
+                        return tf.stack(grad_y_tensors, axis=1), tf.stack(grad_x_tensors, axis=1)
+                    grad_y_color, grad_x_color = stacked_gradients(color)
+                    grad_y_normal, grad_x_normal = stacked_gradients(normal)
+                    grad_y_albedo, grad_x_albedo = stacked_gradients(albedo)
+                    grad_y_depth, grad_x_depth = stacked_gradients(depth)
+                else:
+                    grad_y_color, grad_x_color = tf.image.image_gradients(color)
+                    grad_y_normal, grad_x_normal = tf.image.image_gradients(normal)
+                    grad_y_albedo, grad_x_albedo = tf.image.image_gradients(albedo)
+                    grad_y_depth, grad_x_depth = tf.image.image_gradients(depth)
 
                 grad_y = tf.concat([grad_y_color, grad_y_normal, grad_y_albedo, grad_y_depth], -1)
                 grad_x = tf.concat([grad_x_color, grad_x_normal, grad_x_albedo, grad_x_depth], -1)
@@ -387,6 +415,13 @@ class Denoiser(object):
                     'var_features': var_features,
                     'gt_out': gt_out,
                 }
+
+            # TODO for full comparison
+            full_comparison = False
+            if indiv_spp > 0 and full_comparison:
+                for tf_buffer_name in tf_buffers.keys():
+                    if not tf_buffer_name.startswith('gt'):
+                        tf_buffers[tf_buffer_name] = tf.reduce_mean(tf_buffers[tf_buffer_name], axis=1)
 
         return tf_buffers, init_ops
 
