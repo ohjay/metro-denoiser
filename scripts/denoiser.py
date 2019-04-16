@@ -608,7 +608,7 @@ class Denoiser(object):
                 im_paths = [config['evaluate']['im_path']]
 
             # loop over all images (might just be one)
-            for im_path in tqdm(im_paths):
+            for im_path in im_paths:
                 if im_path.endswith('exr'):
                     input_buffers = du.read_exr(im_path, fp16=self.fp16)
                 else:
