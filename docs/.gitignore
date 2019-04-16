@@ -11,3 +11,6 @@
 *.eps
 *.bib
 *.synctex.gz(busy)
+/*.jpg
+/*.png
+/*.psd
