@@ -277,7 +277,7 @@ def make_decode(mode, tf_dtype, buffer_h, buffer_w, eps, clip_ims, indiv_spp=-1)
         for name in _features.keys():
             p[name] = tf.decode_raw(features[name], tf_dtype)
             if indiv_spp > 0 and not name.startswith('gt'):
-                p[name] = tf.reshape(p[name], [indiv_spp, buffer_h, buffer_w, N_CHANNELS[name]])
+                p[name] = tf.reshape(p[name], [-1, buffer_h, buffer_w, N_CHANNELS[name]])[:indiv_spp]
             else:
                 p[name] = tf.reshape(p[name], [buffer_h, buffer_w, N_CHANNELS[name]])
 
@@ -604,7 +604,7 @@ def make_network_inputs(buffers, clip_ims, eps, indiv_spp=-1):
             feature[fname] = []
             for ibuffer in buffers:
                 feature[fname].append(ibuffer[fname])
-            feature[fname] = np.array(feature[fname])  # all will be (spp, h, w, 3 or 1)
+            feature[fname] = np.array(feature[fname])[:indiv_spp]  # all will be (spp, h, w, 3 or 1)
         buffers = feature
 
     # clip
@@ -758,7 +758,7 @@ def show_multiple(*ims, **kwargs):
     ncols = len(ims) % row_max if len(ims) < row_max else row_max
     base_nrows = nrows
     if len(ims[0].shape) == 4:
-        nrows *= min(len(ims[0].shape), batch_max)
+        nrows *= min(min(len(ims[0].shape), batch_max), ims[0].shape[0])
 
     fig, ax = plt.subplots(nrows, ncols, squeeze=False)
     for j, im in enumerate(ims):
@@ -773,7 +773,7 @@ def show_multiple(*ims, **kwargs):
             # single-channel (grayscale) image
             _im = np.squeeze(_im, axis=-1)
         if _nd == 4:
-            for k in range(min(_nd, batch_max)):
+            for k in range(min(min(_nd, batch_max), _im.shape[0])):
                 row = base_nrows * k + j // row_max
                 ax[row, j % row_max].imshow(_im[k], cmap=cmap)
                 ax[row, j % row_max].set_axis_off()

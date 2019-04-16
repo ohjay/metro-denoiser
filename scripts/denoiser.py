@@ -388,7 +388,6 @@ class Denoiser(object):
                     }
 
                 # compute gradients
-                grad = []
                 if indiv_spp > 0:
                     def stacked_gradients(batched_tensor):
                         grad_y_tensors, grad_x_tensors = zip(
