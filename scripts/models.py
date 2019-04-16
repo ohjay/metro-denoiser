@@ -184,7 +184,7 @@ class DKPCN(object):
                     self.opt_op = opt.apply_gradients(grads_and_vars, global_step=self.global_step)
 
             # logging
-            graph = sess.graph if sess is not None else None
+            graph = sess.graph if sess is not None and indiv_spp <= 0 else None
             self.train_writer = tf.summary.FileWriter(
                 get_run_dir(os.path.join(summary_dir, 'train')), graph)
             self.validation_writer = tf.summary.FileWriter(

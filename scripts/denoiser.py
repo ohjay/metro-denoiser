@@ -611,7 +611,6 @@ class Denoiser(object):
             for im_path in tqdm(im_paths):
                 if im_path.endswith('exr'):
                     input_buffers = du.read_exr(im_path, fp16=self.fp16)
-                    input_buffers = du.stack_channels(input_buffers)
                 else:
                     dot_idx      = im_path.rfind('.')
                     filetype_str = ' ' + im_path[dot_idx:] if dot_idx != -1 else ''
@@ -713,9 +712,7 @@ class Denoiser(object):
                 _out = diff_out + spec_out
                 out = du.clip_and_gamma_correct(_out)
 
-                _in = np.concatenate(
-                    [input_buffers['R'], input_buffers['G'], input_buffers['B']], axis=-1)
-                _in = du.clip_and_gamma_correct(_in)
+                _in = du.clip_and_gamma_correct(input_buffers['default'])
 
                 # try to get gt image for comparison (might not exist)
                 _gt_out = None
@@ -724,14 +721,11 @@ class Denoiser(object):
                 if match:
                     gt_path = '%s-%sspp.exr' % (match.group(1), str(gt_spp).zfill(5))
                     gt_buffers = du.read_exr(gt_path, fp16=self.fp16)
-                    gt_buffers = du.stack_channels(gt_buffers)
 
                     # (temp) for smaller images
                     # du.crop_buffers(gt_buffers, 110, -110, 160, -560)
 
-                    _gt_out = np.concatenate(
-                        [gt_buffers['R'], gt_buffers['G'], gt_buffers['B']], axis=-1)
-                    gt_out = du.clip_and_gamma_correct(_gt_out)
+                    gt_out = du.clip_and_gamma_correct(gt_buffers['default'])
 
                     _mse = du.mse(_out, _gt_out)
                     _mrse = du.mrse(_out, _gt_out)
@@ -807,8 +801,7 @@ class Denoiser(object):
                     spec_kernels = np.reshape(spec_kernels, (-1, ks, ks))  # (6 * 6, ks, ks)
                     spec_kernels = du.clip_and_gamma_correct(spec_kernels)
 
-                    rgb = du.clip_and_gamma_correct(np.concatenate(
-                        [input_buffers['R'], input_buffers['G'], input_buffers['B']], axis=-1))
+                    rgb = du.clip_and_gamma_correct(input_buffers['default'])
                     rgb_highlight = rgb * 0.3
                     rgb_highlight[y-3:y+3, x-3:x+3, :] = rgb[y-3:y+3, x-3:x+3, :] * 2.0
                     rgb_highlight = rgb_highlight[

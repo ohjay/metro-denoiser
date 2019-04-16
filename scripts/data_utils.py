@@ -3,6 +3,7 @@ import re
 import cv2
 import time
 import Imath
+import pyexr
 import pickle
 import random
 import OpenEXR
@@ -24,41 +25,17 @@ MAX_DEPTH = 20.0  # empirical
 def read_exr(filepath, fp16=True):
     """
     Reads EXR file as dictionary of NumPy arrays.
-    `read_exr` and `write_exr` are inverse operations.
+    The dictionary will be of the form {'name': [h, w, c]-array}.
     """
-    exr = OpenEXR.InputFile(filepath)
-    header = exr.header()
-    wind = header['dataWindow']
-    im_shape = (wind.max.y - wind.min.y + 1, wind.max.x - wind.min.x + 1)
-
     if fp16:
-        pt_dtype = Imath.PixelType.HALF
-        np_dtype = np.float16
+        buffers = pyexr.read_all(filepath, precision=pyexr.HALF)
     else:
-        pt_dtype = Imath.PixelType.FLOAT
-        np_dtype = np.float32
-    pt = Imath.PixelType(pt_dtype)
-
-    buffers = {}
-    for c in header['channels'].keys():
-        c_components = c.split('.')
-        curr_dict = buffers
-        for component in c_components[:-1]:
-            if component not in curr_dict:
-                curr_dict[component] = {}
-            curr_dict = curr_dict[component]
-        component = c_components[-1]
-        curr_dict[component] = np.fromstring(exr.channel(c, pt), dtype=np_dtype)
-        curr_dict[component].shape = im_shape
-
-    return buffers
-    # RGB image: np.stack([buffers['R'], buffers['G'], buffers['B']], axis=-1)
+        buffers = pyexr.read_all(filepath)
+    return {c: np.nan_to_num(data) for c, data in buffers.items()}
 
 def write_exr(buffers, filepath):
     """
     Write dictionary of NumPy arrays to EXR file.
-    `read_exr` and `write_exr` are inverse operations.
-
     If BUFFERS is a NumPy array with 3 channels, will interpret as RGB and proceed.
     """
     if type(buffers) == np.ndarray and buffers.shape[-1] == 3:
@@ -90,66 +67,6 @@ def write_exr(buffers, filepath):
     exr.writePixels(
         dict([(c, data.tostring()) for c, data in pixels.items()]))
     exr.close()
-
-def stack_channels(buffers):
-    """
-    Stack multi-channel data.
-    Currently, BUFFERS is a nested dictionary as produced by `read_exr`.
-    Assumption: no more than one layer of nesting.
-
-    If, e.g., BUFFERS = {'diffuse': {'R': arrR, 'G': arrG, 'B': arrB}},
-    this function will return {'diffuse': np.stack([arrR, arrG, arrB], axis=-1)}.
-    Note: if channels are named 'R', 'G', and 'B', will order as RGB.
-
-    The return value is a dictionary of the form {'name': [h, w, c]-array}.
-
-    (`read_exr` -> `stack_channels`) and
-    (`split_channels` -> `write_exr`) are inverse operations.
-    """
-    buffers_out = {}
-    for c, data in buffers.items():
-        if type(data) == dict:
-            data_channels = []
-            if 'R' in data:
-                data_channels.append(data['R'])
-            if 'G' in data:
-                data_channels.append(data['G'])
-            if 'B' in data:
-                data_channels.append(data['B'])
-            for component in data:
-                if component not in {'R', 'G', 'B'}:
-                    data_channels.append(data[component])
-            buffers_out[c] = np.stack(data_channels, axis=-1)
-        else:
-            buffers_out[c] = np.expand_dims(data, -1)
-        buffers_out[c] = np.nan_to_num(buffers_out[c])
-    return buffers_out
-
-def split_channels(buffers):
-    """
-    Split multi-channel data.
-    Currently, BUFFERS is a non-nested dictionary.
-
-    Assumption: 1 channel, 'R'/'G'/'B'     -> (same).
-    Assumption: 1 channel, non 'R'/'G'/'B' -> Z.
-    Assumption: 3 channels                 -> R, G, B.
-
-    (`read_exr` -> `stack_channels`) and
-    (`split_channels` -> `write_exr`) are inverse operations.
-    """
-    buffers_out = {}
-    for c, data in buffers.items():
-        if c in {'R', 'G', 'B'}:
-            buffers_out[c] = data[:, :, 0]
-        elif data.shape[-1] == 1:
-            buffers_out[c] = {
-                'Z': data[:, :, 0]}
-        else:
-            buffers_out[c] = {
-                'R': data[:, :, 0],
-                'G': data[:, :, 1],
-                'B': data[:, :, 2]}
-    return buffers_out
 
 # ===============================================
 # TFRECORDS I/O
@@ -209,10 +126,9 @@ def write_tfrecords(tfrecord_filepath, input_exr_files, gt_exr_files, patches_pe
                 if k % 10 == 0:
                     _if_dir = os.path.basename(os.path.dirname(input_filepath))
                     print('[o] Reading `%s`...' % os.path.join(_if_dir, os.path.basename(input_filepath)))
-                input_buffers.append(stack_channels(read_exr(input_filepath, fp16=fp16)))
+                input_buffers.append(read_exr(input_filepath, fp16=fp16))
 
             gt_buffers = read_exr(gt_filepath, fp16=fp16)
-            gt_buffers = stack_channels(gt_buffers)
 
             print('[o] Sampling patches...')
             # Sample based on ground truth buffers
@@ -279,7 +195,6 @@ def write_tfrecords(tfrecord_filepath, input_exr_files, gt_exr_files, patches_pe
                 sampling_pdf = generate_sampling_map(error_maps[input_filepath], patch_size)
 
             input_buffers = read_exr(input_filepath, fp16=fp16)
-            input_buffers = stack_channels(input_buffers)
             try:
                 _input_id  = input_basename[:input_basename.rfind('.')]
                 _debug_dir = debug_dir if i % save_debug_ims_every == 0 else ''
@@ -292,7 +207,6 @@ def write_tfrecords(tfrecord_filepath, input_exr_files, gt_exr_files, patches_pe
                 continue
 
             gt_buffers = read_exr(gt_filepath, fp16=fp16)
-            gt_buffers = stack_channels(gt_buffers)
 
             # One example per patch
             r = patch_size // 2
@@ -479,8 +393,7 @@ def sample_patches(buffers, num_patches, patch_h, patch_w, debug_dir, input_id,
     y_range = (patch_h // 2, h - patch_h // 2)  # [)
     x_range = (patch_w // 2, w - patch_w // 2)  # [)
 
-    color = clip_and_gamma_correct(
-        np.concatenate([buffers['R'], buffers['G'], buffers['B']], axis=-1))
+    color = clip_and_gamma_correct(buffers['default'])
     c_var = None
     n_var = None
 
