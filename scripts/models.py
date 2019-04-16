@@ -379,7 +379,7 @@ class MultiscaleModel(DKPCN):
     def __init__(self, tf_buffers1, buffer_h, buffer_w, layers_config,
                  is_training, learning_rate, summary_dir, scope=None,
                  save_best=False, fp16=False, clip_by_global_norm=False,
-                 valid_padding=False, asymmetric_loss=True, sess=None, reuse=False):
+                 valid_padding=False, asymmetric_loss=True, sess=None, reuse=False, indiv_spp=-1):
 
         # should pass these in from outside
         coarse_wt = 0.9
@@ -715,7 +715,7 @@ class CombinedModel(object):
     """Diffuse + specular KPCNs."""
 
     def __init__(self, diff_kpcn, spec_kpcn, tf_buffers_comb, eps,
-                 learning_rate, summary_dir, fp16=False, clip_by_global_norm=False):
+                 learning_rate, summary_dir, fp16=False, clip_by_global_norm=False, indiv_spp=-1):
 
         self.diff_kpcn = diff_kpcn
         self.spec_kpcn = spec_kpcn

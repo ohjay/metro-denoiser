@@ -34,7 +34,7 @@ class Denoiser(object):
     def _training_loop(sess, kpcn, train_init_op, val_init_op, identifier,
                        log_freq, save_freq, viz_freq, max_epochs, checkpoint_dir,
                        block_on_viz, restore_path='', reset_lr=True, save_best=False,
-                       only_val=False, dropout_keep_prob=0.7, aux_summary_write_freq=-1):
+                       only_val=False, dropout_keep_prob=0.7, aux_summary_write_freq=-1, indiv_spp=-1):
         # initialize/restore
         sess.run(tf.group(
             tf.global_variables_initializer(), tf.local_variables_initializer()))
@@ -85,6 +85,9 @@ class Denoiser(object):
                 while True:
                     try:
                         loss, _in, _out, _gt = kpcn.run_validation(sess)
+                        if indiv_spp > 0:
+                            # Make suitable for visualization
+                            _in = np.mean(_in, axis=1)
                         if (count == 0 or only_val) and viz_freq > 0 and (i + 1) % viz_freq == 0:
                             du.show_multiple(_in, _out, _gt, block_on_viz=block_on_viz)
                         total_loss += loss
@@ -141,6 +144,9 @@ class Denoiser(object):
         multiscale     = config['kpcn'].get('multiscale', False)
         single_network = config['kpcn'].get('single_network', False)
 
+        is_indiv_samples = config['data'].get('is_indiv_samples', False)
+        indiv_spp = config['data']['in_spp'] if is_indiv_samples else -1
+
         if type(learning_rate) == str:
             learning_rate = eval(learning_rate)
         if type(max_epochs) == str:
@@ -156,6 +162,7 @@ class Denoiser(object):
 
         tf_config = tf.ConfigProto(
             device_count={'GPU': 1}, allow_soft_placement=True)
+        tf_config.gpu_options.allow_growth = True
         with tf.Session(config=tf_config) as sess:
             # training loops
 
@@ -171,11 +178,11 @@ class Denoiser(object):
                     tf_buffers, patch_size, patch_size, layers_config, is_training,
                     learning_rate, summary_dir, scope='single', save_best=save_best,
                     fp16=self.fp16, clip_by_global_norm=clip_by_global_norm,
-                    valid_padding=valid_padding, asymmetric_loss=asymmetric_loss, sess=sess)
+                    valid_padding=valid_padding, asymmetric_loss=asymmetric_loss, sess=sess, indiv_spp=indiv_spp)
                 self.diff_kpcn = self.spec_kpcn = kpcn
                 self._training_loop(sess, kpcn, init_ops['train'], init_ops['val'],
                     'single', log_freq, save_freq, viz_freq, max_epochs, checkpoint_dir, block_on_viz,
-                    restore_path, reset_lr, save_best, only_val, dropout_keep_prob, asum_wfreq)
+                    restore_path, reset_lr, save_best, only_val, dropout_keep_prob, asum_wfreq, indiv_spp)
             else:
                 if train_diff:
                     diff_checkpoint_dir = os.path.join(checkpoint_dir, 'diff')
@@ -188,7 +195,7 @@ class Denoiser(object):
                         _tf_buffers, patch_size, patch_size, layers_config, is_training,
                         learning_rate, summary_dir, scope='diffuse', save_best=save_best,
                         fp16=self.fp16, clip_by_global_norm=clip_by_global_norm,
-                        valid_padding=valid_padding, asymmetric_loss=asymmetric_loss, sess=sess)
+                        valid_padding=valid_padding, asymmetric_loss=asymmetric_loss, sess=sess, indiv_spp=indiv_spp)
 
                 if train_spec:
                     spec_checkpoint_dir = os.path.join(checkpoint_dir, 'spec')
@@ -201,7 +208,7 @@ class Denoiser(object):
                         _tf_buffers, patch_size, patch_size, layers_config, is_training,
                         learning_rate, summary_dir, scope='specular', save_best=save_best,
                         fp16=self.fp16, clip_by_global_norm=clip_by_global_norm,
-                        valid_padding=valid_padding, asymmetric_loss=asymmetric_loss, sess=sess)
+                        valid_padding=valid_padding, asymmetric_loss=asymmetric_loss, sess=sess, indiv_spp=indiv_spp)
 
                 if comb:
                     self.comb_kpcn      = CombinedModel(
@@ -211,15 +218,15 @@ class Denoiser(object):
                     restore_path        = (diff_restore_path, spec_restore_path)
                     self._training_loop(sess, self.comb_kpcn, init_ops['comb_train'], init_ops['comb_val'],
                         'comb', log_freq, save_freq, viz_freq, max_epochs, comb_checkpoint_dir, block_on_viz,
-                        restore_path, reset_lr, save_best, only_val, dropout_keep_prob, asum_wfreq)
+                        restore_path, reset_lr, save_best, only_val, dropout_keep_prob, asum_wfreq, indiv_spp)
                 elif train_diff:
                     self._training_loop(sess, self.diff_kpcn, init_ops['diff_train'], init_ops['diff_val'],
                         'diff', log_freq, save_freq, viz_freq, max_epochs, diff_checkpoint_dir, block_on_viz,
-                        diff_restore_path, reset_lr, save_best, only_val, dropout_keep_prob, asum_wfreq)
+                        diff_restore_path, reset_lr, save_best, only_val, dropout_keep_prob, asum_wfreq, indiv_spp)
                 elif train_spec:
                     self._training_loop(sess, self.spec_kpcn, init_ops['spec_train'], init_ops['spec_val'],
                         'spec', log_freq, save_freq, viz_freq, max_epochs, spec_checkpoint_dir, block_on_viz,
-                        spec_restore_path, reset_lr, save_best, only_val, dropout_keep_prob, asum_wfreq)
+                        spec_restore_path, reset_lr, save_best, only_val, dropout_keep_prob, asum_wfreq, indiv_spp)
 
     def load_data(self, config, shuffle=True, comb=False, single_network=False):
         batch_size        = config['train_params'].get('batch_size', 5)
@@ -228,6 +235,9 @@ class Denoiser(object):
         scenes            = config['data']['scenes']
         clip_ims          = config['data']['clip_ims']
         shuffle_filenames = config['data']['shuffle_filenames']
+
+        is_indiv_samples = config['data'].get('is_indiv_samples', False)
+        indiv_spp = config['data']['in_spp'] if is_indiv_samples else -1
 
         train_filenames = []
         val_filenames   = []
@@ -264,14 +274,14 @@ class Denoiser(object):
             size_lim = config['data'].get('shuffle_buffer_size_limit', 50000)
 
             if comb:
-                decode_comb = du.make_decode('comb', self.tf_dtype, patch_size, patch_size, self.eps, clip_ims)
+                decode_comb = du.make_decode('comb', self.tf_dtype, patch_size, patch_size, self.eps, clip_ims, indiv_spp=indiv_spp)
                 datasets = {
                     'comb_train': train_dataset.map(decode_comb, num_parallel_calls=4),
                     'comb_val': val_dataset.map(decode_comb, num_parallel_calls=4),
                 }
             else:
-                decode_diff = du.make_decode('diff', self.tf_dtype, patch_size, patch_size, self.eps, clip_ims)
-                decode_spec = du.make_decode('spec', self.tf_dtype, patch_size, patch_size, self.eps, clip_ims)
+                decode_diff = du.make_decode('diff', self.tf_dtype, patch_size, patch_size, self.eps, clip_ims, indiv_spp=indiv_spp)
+                decode_spec = du.make_decode('spec', self.tf_dtype, patch_size, patch_size, self.eps, clip_ims, indiv_spp=indiv_spp)
                 datasets = {
                     'diff_train': train_dataset.map(decode_diff, num_parallel_calls=4),
                     'spec_train': train_dataset.map(decode_spec, num_parallel_calls=4),
@@ -401,6 +411,10 @@ class Denoiser(object):
         use_error_maps_for_sampling = config['data'].get('use_error_maps_for_sampling', False)
         out_dir                     = config['evaluate']['out_dir']
 
+        is_indiv_samples = config['data'].get('is_indiv_samples', False)
+        indiv_spp = config['data']['in_spp'] if is_indiv_samples else -1
+        indiv_spp_data_dir = config['data'].get('indiv_spp_data_dir', None)
+
         if type(tfrecord_dir) == list:
             tfrecord_dir = tfrecord_dir[0]
 
@@ -414,7 +428,14 @@ class Denoiser(object):
                 error_maps = pickle.load(handle)
 
         for scene in scenes:
-            input_exr_files = sorted(glob.glob(os.path.join(data_dir, scene, in_filename)))
+            if indiv_spp > 0:
+                in_filename = 'sample_stratified*.exr'
+                indiv_subdirs = sorted(next(os.walk(os.path.join(indiv_spp_data_dir, scene)))[1])
+                input_exr_files = [sorted(
+                    glob.glob(os.path.join(indiv_spp_data_dir, scene, subdir, in_filename)),
+                    key=du.natural_keys) for subdir in indiv_subdirs]  # list of lists
+            else:
+                input_exr_files = sorted(glob.glob(os.path.join(data_dir, scene, in_filename)))
             gt_exr_files    = sorted(glob.glob(os.path.join(data_dir, scene, gt_filename)))
             # can skip files if on a time/memory budget
             input_exr_files = [f for i, f in enumerate(input_exr_files[pstart:]) if i % pstep == 0]
@@ -448,7 +469,7 @@ class Denoiser(object):
                     patches_per_im, patch_size, self.fp16, shuffle=pshuffle, debug_dir=debug_dir,
                     save_debug_ims_every=save_debug_ims_every, color_var_weight=color_var_weight,
                     normal_var_weight=normal_var_weight, file_example_limit=file_example_limit,
-                    error_maps=error_maps)
+                    error_maps=error_maps, indiv_spp=indiv_spp)
 
     def visualize_data(self, config, all_features=False):
         """Visualize sampled data stored in the TFRecord files."""
@@ -521,6 +542,9 @@ class Denoiser(object):
         spec_frozen     = config['kpcn']['spec'].get('frozen', '')
         single_network  = config['kpcn'].get('single_network', False)
 
+        is_indiv_samples = config['data'].get('is_indiv_samples', False)
+        indiv_spp = config['data']['in_spp'] if is_indiv_samples else -1
+
         if type(learning_rate) == str:
             learning_rate = eval(learning_rate)
 
@@ -566,7 +590,7 @@ class Denoiser(object):
                 ks = int(sqrt(layers_config[-1]['num_outputs']))
 
                 # make network inputs
-                diff_in, spec_in = du.make_network_inputs(input_buffers, clip_ims, self.eps)
+                diff_in, spec_in = du.make_network_inputs(input_buffers, clip_ims, self.eps, indiv_spp=indiv_spp)
 
                 # split image into l/r sub-images (with overlap)
                 # because my GPU doesn't have enough memory to deal with the whole image at once
@@ -596,7 +620,7 @@ class Denoiser(object):
                                 tf_placeholders, patch_size, patch_size, layers_config,
                                 is_training, learning_rate, summary_dir, scope='single',
                                 fp16=self.fp16, clip_by_global_norm=clip_by_global_norm,
-                                valid_padding=valid_padding, asymmetric_loss=asymmetric_loss, sess=sess)
+                                valid_padding=valid_padding, asymmetric_loss=asymmetric_loss, sess=sess, indiv_spp=indiv_spp)
                             restore_path = config['kpcn'].get('single_restore_path', '')
                             if multiscale:
                                 restore_path = (
@@ -611,12 +635,12 @@ class Denoiser(object):
                                 tf_placeholders, patch_size, patch_size, layers_config,
                                 is_training, learning_rate, summary_dir, scope='diffuse',
                                 fp16=self.fp16, clip_by_global_norm=clip_by_global_norm,
-                                valid_padding=valid_padding, asymmetric_loss=asymmetric_loss, sess=sess)
+                                valid_padding=valid_padding, asymmetric_loss=asymmetric_loss, sess=sess, indiv_spp=indiv_spp)
                             self.spec_kpcn = Model(
                                 tf_placeholders, patch_size, patch_size, layers_config,
                                 is_training, learning_rate, summary_dir, scope='specular',
                                 fp16=self.fp16, clip_by_global_norm=clip_by_global_norm,
-                                valid_padding=valid_padding, asymmetric_loss=asymmetric_loss, sess=sess)
+                                valid_padding=valid_padding, asymmetric_loss=asymmetric_loss, sess=sess, indiv_spp=indiv_spp)
                             diff_restore_path = config['kpcn']['diff'].get('restore_path', '')
                             spec_restore_path = config['kpcn']['spec'].get('restore_path', '')
                             if multiscale:

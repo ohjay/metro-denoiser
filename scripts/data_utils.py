@@ -1,4 +1,5 @@
 import os
+import re
 import cv2
 import time
 import Imath
@@ -930,3 +931,11 @@ def format_seconds(s):
 def crop_buffers(buffers, y0, y1, x0, x1):
     for k in buffers:
         buffers[k] = buffers[k][y0:y1, x0:x1]
+
+def atoi(text):
+    """Source: https://stackoverflow.com/a/5967539."""
+    return int(text) if text.isdigit() else text
+
+def natural_keys(text):
+    """Source: https://stackoverflow.com/a/5967539."""
+    return [atoi(c) for c in re.split(r'(\d+)', text)]
