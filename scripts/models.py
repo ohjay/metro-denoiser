@@ -74,13 +74,6 @@ class DKPCN(object):
             self.is_training = tf.placeholder(tf.bool, name='is_training')
             self.dropout_keep_prob = tf.placeholder_with_default(1.0, shape=(), name='dropout_keep_prob')
 
-            if self.indiv_spp > 0:
-                self.convnd = tf.layers.conv3d
-                self.convnd_name = 'conv3d'
-            else:
-                self.convnd = tf.layers.conv2d
-                self.convnd_name = 'conv2d'
-
             i = 0
             for layer in layers_config:
                 kernel_init = None
@@ -93,21 +86,23 @@ class DKPCN(object):
                 chain = layer.get('chain', 1)
                 for j in range(chain):
                     with tf.variable_scope('layer%d' % (i + j)):
-                        if layer['type'] == 'conv2d':
+                        if layer['type'].startswith('conv'):
+                            conv_function = getattr(tf.layers, layer['type'])
                             padding = 'valid' if self.valid_padding else 'same'
-                            out = self.convnd(
+                            out = conv_function(
                                 out, layer['num_outputs'], layer['kernel_size'],
                                 strides=layer['stride'], padding=padding, activation=activation,
-                                kernel_initializer=kernel_init, name=self.convnd_name)
+                                kernel_initializer=kernel_init, name=layer['type'])
                             kernel = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES,
-                                '%s/%s/%s/kernel' % (self.scope, 'layer%d' % (i + j), self.convnd_name))[0]
+                                '%s/%s/%s/kernel' % (self.scope, 'layer%d' % (i + j), layer['type']))[0]
                             with tf.name_scope('summaries/layer%d' % (i + j)):
                                 summaries.append(tf.summary.histogram('conv_kernel_histogram', kernel))
                         elif layer['type'] == 'residual_block':
                             dropout = layer.get('dropout', True)
                             out = self._residual_block(
                                 out, self.dropout_keep_prob, self.is_training, kernel_init,
-                                layer.get('num_outputs', 100), layer.get('kernel_size', 3), dropout=dropout)
+                                layer.get('num_outputs', 100), layer.get('kernel_size', 3),
+                                dropout=dropout, conv_type=layer.get('conv_type', 'conv2d'))
                         elif layer['type'] == 'batch_normalization':
                             out = tf.layers.batch_normalization(
                                 out, training=self.is_training, name='batch_normalization')
@@ -290,12 +285,13 @@ class DKPCN(object):
 
     def _residual_block(self, _in, dropout_keep_prob, is_training,
                         kernel_init=None, num_outputs=100, kernel_size=3,
-                        batchnorm=True, dropout=True, scope=None, use_names=False):
+                        batchnorm=True, dropout=True, scope=None, use_names=False, conv_type='conv2d'):
         with tf.variable_scope(scope or 'residual_block'):
             out = _in
             for k in range(2):
                 conv_name = 'conv%d' % k if use_names else None
-                out = self.convnd(
+                conv_function = getattr(tf.layers, conv_type)
+                out = conv_function(
                     out, filters=num_outputs, kernel_size=kernel_size, strides=1,
                     padding='same', activation=None, kernel_initializer=kernel_init, name=conv_name)
                 if batchnorm:
