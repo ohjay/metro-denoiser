@@ -123,6 +123,11 @@ def write_tfrecords(tfrecord_filepath, input_exr_files, gt_exr_files, patches_pe
         i = 0
         start_time = time.time()
         for input_filepaths, gt_filepath in zip(input_exr_files, gt_exr_files):
+            # for filename str printing and dictionary saving
+            scene_id = os.path.basename(os.path.dirname(os.path.dirname(input_filepaths[0])))
+            permu_id = os.path.basename(os.path.dirname(input_filepaths[0]))
+            input_id = os.path.join(scene_id, permu_id)
+
             input_buffers = []
             for k, input_filepath in enumerate(input_filepaths):
                 if k % 10 == 0:
@@ -133,13 +138,14 @@ def write_tfrecords(tfrecord_filepath, input_exr_files, gt_exr_files, patches_pe
             gt_buffers = read_exr(gt_filepath, fp16=fp16)
 
             print('[o] Sampling patches...')
-            # Sample based on ground truth buffers
-            patch_indices = sample_patches(
-                gt_buffers, patches_per_im, patch_size, patch_size, '', '',
-                color_var_weight=color_var_weight, normal_var_weight=normal_var_weight, pdf=None)
-            permu_id = os.path.basename(os.path.dirname(input_filepaths[0]))
-            scene_id = os.path.basename(os.path.dirname(os.path.dirname(input_filepaths[0])))
-            input_id = os.path.join(scene_id, permu_id)
+            try:
+                # Sample based on ground truth buffers
+                patch_indices = sample_patches(
+                    gt_buffers, patches_per_im, patch_size, patch_size, '', '',
+                    color_var_weight=color_var_weight, normal_var_weight=normal_var_weight, pdf=None)
+            except ValueError as e:
+                print('[-] Invalid value during %s sampling. (%s)' % (input_id, str(e)))
+                continue
             which_patch_indices[input_id] = patch_indices
 
             r = patch_size // 2
@@ -190,11 +196,12 @@ def write_tfrecords(tfrecord_filepath, input_exr_files, gt_exr_files, patches_pe
         i = 0
         start_time = time.time()
         for input_filepath, gt_filepath in zip(input_exr_files, gt_exr_files):
-            # for filename str printing
+            # for filename str printing and dictionary saving
             input_dirname = os.path.dirname(input_filepath)
             input_basename = os.path.basename(input_filepath)
             scene_id = os.path.basename(input_dirname)
-            input_id = os.path.join(scene_id, input_basename)
+            permu_id = input_basename[:input_basename.rfind('-')]
+            input_id = os.path.join(scene_id, permu_id)
 
             sampling_pdf = None
             if error_maps is not None:
@@ -209,11 +216,10 @@ def write_tfrecords(tfrecord_filepath, input_exr_files, gt_exr_files, patches_pe
                 patch_indices = sample_patches(
                     input_buffers, patches_per_im, patch_size, patch_size, _debug_dir, _input_id,
                     color_var_weight=color_var_weight, normal_var_weight=normal_var_weight, pdf=sampling_pdf)
-                permu_id = input_basename[:input_basename.rfind('-')]
-                which_patch_indices[os.path.join(scene_id, permu_id)] = patch_indices
             except ValueError as e:
                 print('[-] Invalid value during %s sampling. (%s)' % (input_id, str(e)))
                 continue
+            which_patch_indices[os.path.join(scene_id, permu_id)] = patch_indices
 
             gt_buffers = read_exr(gt_filepath, fp16=fp16)
 
