@@ -448,6 +448,7 @@ class Denoiser(object):
         is_indiv_samples = config['data'].get('is_indiv_samples', False)
         indiv_spp = config['data']['in_spp'] if is_indiv_samples else -1
         indiv_spp_data_dir = config['data'].get('indiv_spp_data_dir', None)
+        save_integrated_patches = config['data'].get('save_integrated_patches', False)
 
         if type(tfrecord_dir) == list:
             tfrecord_dir = tfrecord_dir[0]
@@ -503,7 +504,7 @@ class Denoiser(object):
                     patches_per_im, patch_size, self.fp16, shuffle=pshuffle, debug_dir=debug_dir,
                     save_debug_ims_every=save_debug_ims_every, color_var_weight=color_var_weight,
                     normal_var_weight=normal_var_weight, file_example_limit=file_example_limit,
-                    error_maps=error_maps, indiv_spp=indiv_spp)
+                    error_maps=error_maps, indiv_spp=indiv_spp, save_integrated_patches=save_integrated_patches)
 
     def visualize_data(self, config, all_features=False):
         """Visualize sampled data stored in the TFRecord files."""

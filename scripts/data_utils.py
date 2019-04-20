@@ -93,7 +93,8 @@ def _bytes_feature(value):
 
 def write_tfrecords(tfrecord_filepath, input_exr_files, gt_exr_files, patches_per_im,
                     patch_size, fp16, shuffle=False, debug_dir='', save_debug_ims_every=1,
-                    color_var_weight=1.0, normal_var_weight=1.0, file_example_limit=1e5, error_maps=None, indiv_spp=-1):
+                    color_var_weight=1.0, normal_var_weight=1.0, file_example_limit=1e5,
+                    error_maps=None, indiv_spp=-1, save_integrated_patches=False):
     """Export PATCHES_PER_IM examples for each EXR file.
     Accepts two lists of EXR filepaths with corresponding orderings.
 
@@ -104,6 +105,7 @@ def write_tfrecords(tfrecord_filepath, input_exr_files, gt_exr_files, patches_pe
 
     file_idx = 0
     example_buffer = []
+    which_patch_indices = {}
 
     def write_example_buffer():
         if shuffle:
@@ -135,6 +137,10 @@ def write_tfrecords(tfrecord_filepath, input_exr_files, gt_exr_files, patches_pe
             patch_indices = sample_patches(
                 gt_buffers, patches_per_im, patch_size, patch_size, '', '',
                 color_var_weight=color_var_weight, normal_var_weight=normal_var_weight, pdf=None)
+            permu_id = os.path.basename(os.path.dirname(input_filepaths[0]))
+            scene_id = os.path.basename(os.path.dirname(os.path.dirname(input_filepaths[0])))
+            input_id = os.path.join(scene_id, permu_id)
+            which_patch_indices[input_id] = patch_indices
 
             r = patch_size // 2
             for y, x in patch_indices:
@@ -155,7 +161,10 @@ def write_tfrecords(tfrecord_filepath, input_exr_files, gt_exr_files, patches_pe
                     feature[fname] = []
                     for ibuffer in input_buffers:
                         feature[fname].append(ibuffer[fname][y-r:y+r+1, x-r:x+r+1, :])
-                    feature[fname] = np.array(feature[fname])  # all will be (depth, ph, pw, 3)
+                    if save_integrated_patches:
+                        feature[fname] = np.mean(feature[fname], axis=0)  # all will be (ph, pw, 3)
+                    else:
+                        feature[fname] = np.array(feature[fname])  # all will be (depth, ph, pw, 3)
 
                 feature['gt_diffuse'] = gt_buffers['diffuse'][y-r:y+r+1, x-r:x+r+1, :]
                 feature['gt_specular'] = gt_buffers['specular'][y-r:y+r+1, x-r:x+r+1, :]
@@ -168,9 +177,6 @@ def write_tfrecords(tfrecord_filepath, input_exr_files, gt_exr_files, patches_pe
                         feature[c] = _bytes_feature(tf.compat.as_bytes(data.tostring()))
                 example = tf.train.Example(features=tf.train.Features(feature=feature))
                 example_buffer.append(example)
-            input_basename = os.path.basename(os.path.dirname(input_filepaths[0]))
-            input_dirname = os.path.basename(os.path.dirname(os.path.dirname(input_filepaths[0])))
-            input_id = os.path.join(os.path.basename(input_dirname), input_basename)
             print('[o] Collected %d examples for %s (%d/%d).'
                   % (len(patch_indices), input_id, i + 1, len(input_exr_files)))
             if (i + 1) % 10 == 0:
@@ -187,7 +193,8 @@ def write_tfrecords(tfrecord_filepath, input_exr_files, gt_exr_files, patches_pe
             # for filename str printing
             input_dirname = os.path.dirname(input_filepath)
             input_basename = os.path.basename(input_filepath)
-            input_id = os.path.join(os.path.basename(input_dirname), input_basename)
+            scene_id = os.path.basename(input_dirname)
+            input_id = os.path.join(scene_id, input_basename)
 
             sampling_pdf = None
             if error_maps is not None:
@@ -202,6 +209,8 @@ def write_tfrecords(tfrecord_filepath, input_exr_files, gt_exr_files, patches_pe
                 patch_indices = sample_patches(
                     input_buffers, patches_per_im, patch_size, patch_size, _debug_dir, _input_id,
                     color_var_weight=color_var_weight, normal_var_weight=normal_var_weight, pdf=sampling_pdf)
+                permu_id = input_basename[:input_basename.rfind('-')]
+                which_patch_indices[os.path.join(scene_id, permu_id)] = patch_indices
             except ValueError as e:
                 print('[-] Invalid value during %s sampling. (%s)' % (input_id, str(e)))
                 continue
@@ -246,6 +255,12 @@ def write_tfrecords(tfrecord_filepath, input_exr_files, gt_exr_files, patches_pe
     # (final) write
     while len(example_buffer) > 0:
         write_example_buffer()
+
+    # save patch indices for future reference
+    patch_indices_filepath = os.path.join(os.path.dirname(tfrecord_filepath), 'patch_indices.pkl')
+    with open(patch_indices_filepath, 'wb') as handle:
+        pickle.dump(which_patch_indices, handle, protocol=pickle.HIGHEST_PROTOCOL)
+        print('[o] Saved a record of the patch indices to `%s`.' % patch_indices_filepath)
 
 def make_decode(mode, tf_dtype, buffer_h, buffer_w, eps, clip_ims, indiv_spp=-1):
     """Mode options: 'diff', 'spec', 'comb'."""
