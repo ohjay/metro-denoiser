@@ -725,7 +725,8 @@ class Denoiser(object):
                     # (temp) for smaller images
                     # du.crop_buffers(gt_buffers, 110, -110, 160, -560)
 
-                    gt_out = du.clip_and_gamma_correct(gt_buffers['default'])
+                    _gt_out = gt_buffers['default']  # unmodified
+                    gt_out = du.clip_and_gamma_correct(_gt_out)  # clipped and corrected
 
                     _mse = du.mse(_out, _gt_out)
                     _mrse = du.mrse(_out, _gt_out)
