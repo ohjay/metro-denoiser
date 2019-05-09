@@ -589,6 +589,7 @@ class Denoiser(object):
         tf_config_kwargs = {
             'device_count': {'GPU': 1},
             'allow_soft_placement': True,
+            'gpu_options': tf.GPUOptions(per_process_gpu_memory_fraction=0.75),
         }
         if use_trt:
             tf_config_kwargs['gpu_options'] = tf.GPUOptions(per_process_gpu_memory_fraction=0.75)
@@ -619,6 +620,7 @@ class Denoiser(object):
 
                 # (temp) for smaller images
                 # du.crop_buffers(input_buffers, 110, -110, 160, -560)
+                # du.crop_buffers(input_buffers, 0, 381, 0, 660)
 
                 h, w = input_buffers['diffuse'].shape[:2]
                 ks = int(sqrt(layers_config[-1]['num_outputs']))
@@ -724,14 +726,19 @@ class Denoiser(object):
 
                     # (temp) for smaller images
                     # du.crop_buffers(gt_buffers, 110, -110, 160, -560)
+                    # du.crop_buffers(gt_buffers, 0, 381, 0, 660)
 
                     _gt_out = gt_buffers['default']  # unmodified
                     gt_out = du.clip_and_gamma_correct(_gt_out)  # clipped and corrected
 
-                    _mse = du.mse(_out, _gt_out)
-                    _mrse = du.mrse(_out, _gt_out)
-                    _dssim = du.dssim(_out, _gt_out)
-                    print('[o] MSE: %.7f | MrSE: %.7f | DSSIM: %.7f' % (_mse, _mrse, _dssim))
+                    in_mse = du.mse(input_buffers['default'], _gt_out)
+                    in_mrse = du.mrse(input_buffers['default'], _gt_out)
+                    in_dssim = du.dssim(input_buffers['default'], _gt_out)
+                    out_mse = du.mse(_out, _gt_out)
+                    out_mrse = du.mrse(_out, _gt_out)
+                    out_dssim = du.dssim(_out, _gt_out)
+                    print('[o][input]  MSE: %.7f | MrSE: %.7f | DSSIM: %.7f' % (in_mse, in_mrse, in_dssim))
+                    print('[o][output] MSE: %.7f | MrSE: %.7f | DSSIM: %.7f' % (out_mse, out_mrse, out_dssim))
 
                 if compute_error:
                     diff_error = np.abs(diff_out - gt_buffers['diffuse'])
