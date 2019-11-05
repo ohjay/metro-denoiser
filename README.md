@@ -1,2 +1,2 @@
-# Metro Renderer
-personal renderer 
+# Metro Denoiser
+denoiser for personal renderer
